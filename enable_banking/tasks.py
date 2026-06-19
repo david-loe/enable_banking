@@ -1,0 +1,288 @@
+from __future__ import annotations
+
+from datetime import timedelta
+from typing import Any
+
+import frappe
+from frappe import _
+from frappe.utils import get_datetime, now_datetime
+
+from enable_banking.client import EnableBankingClient
+from enable_banking.configuration import SETTINGS_DOCTYPE
+from enable_banking.onboarding import (
+	ACCOUNT_DOCTYPE,
+	AUTHORIZATION_DOCTYPE,
+	CONNECTION_DOCTYPE,
+	_provider_datetime,
+)
+from enable_banking.sync import (
+	AUTHORIZED_STATUS,
+	_safe_error,
+	refresh_account,
+	synchronize_account_transactions,
+)
+
+SYNC_INTERVAL_HOURS = {
+	"Every Hour": 1,
+	"Four Times a Day": 6,
+	"Once a Day": 24,
+}
+SYNC_LOCK_TIMEOUT = 30 * 60
+AUTHORIZATION_RETENTION_DAYS = 30
+INACTIVE_SESSION_STATUSES = frozenset(
+	{"CANCELLED", "CLOSED", "EXPIRED", "INVALID", "REVOKED"}
+)
+
+
+@frappe.whitelist()
+def sync_all_now() -> dict[str, Any]:
+	_require_manager()
+	return enqueue_account_syncs(manual=True)
+
+
+@frappe.whitelist()
+def sync_connection_now(connection: str) -> dict[str, Any]:
+	_require_manager()
+	connection_doc = frappe.get_doc(CONNECTION_DOCTYPE, connection)
+	connection_doc.check_permission("write")
+	return enqueue_account_syncs(connection=connection_doc.name, manual=True)
+
+
+@frappe.whitelist()
+def sync_account_now(integration_account: str) -> dict[str, Any]:
+	_require_manager()
+	account = frappe.get_doc(ACCOUNT_DOCTYPE, integration_account)
+	account.check_permission("write")
+	if not account.bank_account:
+		frappe.throw(_("Map the Enable Banking account before synchronizing transactions."))
+	return {"queued": int(enqueue_account_job(account.name, manual=True)), "accounts": [account.name]}
+
+
+def enqueue_scheduled_account_syncs() -> dict[str, Any]:
+	settings = frappe.get_single(SETTINGS_DOCTYPE)
+	if not settings.enabled or not settings.automatic_sync:
+		return {"queued": 0, "accounts": []}
+	if not is_sync_interval_due(settings.sync_interval, now=now_datetime()):
+		return {"queued": 0, "accounts": []}
+	return enqueue_account_syncs(manual=False)
+
+
+def is_sync_interval_due(sync_interval: str, *, now=None) -> bool:
+	hours = SYNC_INTERVAL_HOURS.get(sync_interval)
+	if not hours:
+		return False
+	current = get_datetime(now or now_datetime())
+	return current.hour % hours == 0
+
+
+def enqueue_account_syncs(
+	*,
+	connection: str | None = None,
+	manual: bool,
+) -> dict[str, Any]:
+	settings = frappe.get_single(SETTINGS_DOCTYPE)
+	if not settings.enabled:
+		if manual:
+			frappe.throw(_("Enable Banking is disabled."))
+		return {"queued": 0, "accounts": []}
+
+	filters: dict[str, Any] = {
+		"bank_account": ["is", "set"],
+	}
+	if connection:
+		filters["connection"] = connection
+	if not manual:
+		filters["automatic_sync"] = 1
+
+	accounts = frappe.get_all(
+		ACCOUNT_DOCTYPE,
+		filters=filters,
+		fields=["name", "connection"],
+	)
+	if not accounts:
+		return {"queued": 0, "accounts": []}
+	authorized_connections = {
+		row.name
+		for row in frappe.get_all(
+			CONNECTION_DOCTYPE,
+			filters={
+				"name": ["in", list({row.connection for row in accounts})],
+				"authorization_status": AUTHORIZED_STATUS,
+				**({"automatic_sync": 1} if not manual else {}),
+			},
+			fields=["name"],
+		)
+	}
+	eligible = [row.name for row in accounts if row.connection in authorized_connections]
+	queued = sum(int(enqueue_account_job(account_name, manual=manual)) for account_name in eligible)
+	return {"queued": queued, "accounts": eligible}
+
+
+def enqueue_account_job(integration_account: str, *, manual: bool) -> bool:
+	job = frappe.enqueue(
+		"enable_banking.tasks.run_account_sync",
+		queue="long",
+		timeout=SYNC_LOCK_TIMEOUT,
+		job_id=f"enable-banking-sync::{frappe.local.site}::{integration_account}",
+		deduplicate=True,
+		integration_account=integration_account,
+		manual=manual,
+	)
+	if job is not None:
+		frappe.db.set_value(
+			ACCOUNT_DOCTYPE,
+			integration_account,
+			"sync_status",
+			"Queued",
+			update_modified=False,
+		)
+	return job is not None
+
+
+def run_account_sync(integration_account: str, manual: bool = False) -> dict[str, Any]:
+	lock = frappe.cache().lock(
+		f"enable-banking:account-sync:{frappe.local.site}:{integration_account}",
+		timeout=SYNC_LOCK_TIMEOUT,
+		blocking_timeout=0,
+	)
+	if not lock.acquire(blocking=False):
+		return {"locked": True, "successful": False}
+	try:
+		account = frappe.get_doc(ACCOUNT_DOCTYPE, integration_account)
+		connection = frappe.get_doc(CONNECTION_DOCTYPE, account.connection)
+		_update_doc(
+			connection,
+			{
+				"last_sync_attempt_at": now_datetime(),
+				"last_error": None,
+			},
+		)
+		settings = frappe.get_single(SETTINGS_DOCTYPE)
+		if not manual and (
+			not settings.enabled
+			or not settings.automatic_sync
+			or not account.automatic_sync
+			or not connection.automatic_sync
+		):
+			return {"disabled": True, "successful": False}
+
+		client = EnableBankingClient()
+		session = verify_connection_session(connection, client=client)
+		if session.get("status") != AUTHORIZED_STATUS:
+			return {"reauthorization_required": True, "successful": False}
+
+		try:
+			refresh_account(
+				account,
+				connection=connection,
+				client=client,
+				raise_on_error=True,
+				record_sync_status=False,
+			)
+			result = synchronize_account_transactions(
+				account,
+				connection=connection,
+				client=client,
+				settings=settings,
+			)
+			values = {
+				"sync_counts": _format_counts(result),
+				"last_error": getattr(account, "last_error", None),
+			}
+			if result.get("successful"):
+				values["last_sync_success_at"] = now_datetime()
+				values["last_error"] = None
+			_update_doc(connection, values)
+			return result
+		except Exception as exc:
+			_update_doc(connection, {"last_error": _safe_error(exc)})
+			raise
+	finally:
+		if lock.owned():
+			lock.release()
+
+
+def verify_connection_session(connection, *, client: EnableBankingClient | None = None) -> dict[str, Any]:
+	client = client or EnableBankingClient()
+	checked_at = now_datetime()
+	try:
+		session = client.get_session(connection.provider_session_id)
+		status = str(session.get("status") or "").upper()
+		if not status:
+			raise ValueError(_("Enable Banking returned a session without a status."))
+		session["status"] = status
+
+		values: dict[str, Any] = {
+			"authorization_status": status,
+			"last_health_check_at": checked_at,
+			"last_error": None,
+		}
+		if status == AUTHORIZED_STATUS:
+			values["last_successful_health_check_at"] = checked_at
+			access = session.get("access") or {}
+			if access.get("valid_until"):
+				values["valid_until"] = _provider_datetime(access["valid_until"])
+		else:
+			values["automatic_sync"] = 0
+		_update_doc(connection, values)
+
+		if status in INACTIVE_SESSION_STATUSES:
+			frappe.db.set_value(
+				ACCOUNT_DOCTYPE,
+				{"connection": connection.name},
+				{"automatic_sync": 0, "sync_status": "Disabled"},
+				update_modified=False,
+			)
+		return session
+	except Exception as exc:
+		_update_doc(
+			connection,
+			{
+				"last_health_check_at": checked_at,
+				"last_error": _safe_error(exc),
+			},
+		)
+		raise
+
+
+def purge_consumed_authorizations() -> int:
+	cutoff = now_datetime() - timedelta(days=AUTHORIZATION_RETENTION_DAYS)
+	names = frappe.get_all(
+		AUTHORIZATION_DOCTYPE,
+		filters={
+			"status": ["in", ["Consumed", "Cancelled", "Failed", "Expired"]],
+			"consumed_at": ["<", cutoff],
+		},
+		pluck="name",
+	)
+	for name in names:
+		frappe.db.set_value(
+			CONNECTION_DOCTYPE,
+			{"authorization": name},
+			{"authorization": None},
+			update_modified=False,
+		)
+		frappe.delete_doc(AUTHORIZATION_DOCTYPE, name, ignore_permissions=True)
+	return len(names)
+
+
+def _update_doc(doc, values: dict[str, Any]) -> None:
+	doc.db_set(values)
+	for key, value in values.items():
+		setattr(doc, key, value)
+
+
+def _format_counts(result: dict[str, Any]) -> str:
+	return _(
+		"Fetched {0}, created {1}, duplicates {2}, skipped {3}, failed {4}"
+	).format(
+		result.get("fetched", 0),
+		result.get("created", 0),
+		result.get("duplicate", 0),
+		result.get("skipped", 0),
+		result.get("failed", 0),
+	)
+
+
+def _require_manager() -> None:
+	frappe.only_for(("System Manager", "Accounts Manager"))

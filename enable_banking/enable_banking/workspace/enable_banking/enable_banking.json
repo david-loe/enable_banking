@@ -1,0 +1,68 @@
+{
+ "app": "enable_banking",
+ "charts": [],
+ "content": "[{\"id\":\"enable-banking-header\",\"type\":\"header\",\"data\":{\"text\":\"<span class=\\\"h4\\\"><b>Enable Banking</b></span>\",\"col\":12}},{\"id\":\"enable-banking-settings\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Enable Banking Settings\",\"col\":4}},{\"id\":\"enable-banking-connections\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Connections\",\"col\":4}},{\"id\":\"enable-banking-accounts\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Accounts\",\"col\":4}},{\"id\":\"enable-banking-transactions\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Bank Transactions\",\"col\":4}}]",
+ "creation": "2026-06-19 00:00:00.000000",
+ "custom_blocks": [],
+ "docstatus": 0,
+ "doctype": "Workspace",
+ "for_user": "",
+ "hide_custom": 0,
+ "icon": "banknote",
+ "idx": 0,
+ "is_hidden": 0,
+ "label": "Enable Banking",
+ "links": [],
+ "modified": "2026-06-19 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Enable Banking",
+ "name": "Enable Banking",
+ "number_cards": [],
+ "owner": "Administrator",
+ "parent_page": "",
+ "public": 1,
+ "quick_lists": [],
+ "restrict_to_domain": "",
+ "roles": [
+  {
+   "role": "Accounts Manager"
+  },
+  {
+   "role": "System Manager"
+  }
+ ],
+ "sequence_id": 30.0,
+ "shortcuts": [
+  {
+   "color": "Grey",
+   "doc_view": "List",
+   "label": "Enable Banking Settings",
+   "link_to": "Enable Banking Settings",
+   "type": "DocType"
+  },
+  {
+   "color": "Grey",
+   "doc_view": "List",
+   "label": "Connections",
+   "link_to": "Enable Banking Connection",
+   "type": "DocType"
+  },
+  {
+   "color": "Grey",
+   "doc_view": "List",
+   "label": "Accounts",
+   "link_to": "Enable Banking Account",
+   "type": "DocType"
+  },
+  {
+   "color": "Grey",
+   "doc_view": "List",
+   "label": "Bank Transactions",
+   "link_to": "Bank Transaction",
+   "stats_filter": "[[\"Bank Transaction\",\"enable_banking_account\",\"is\",\"set\"]]",
+   "type": "DocType"
+  }
+ ],
+ "title": "Enable Banking",
+ "type": "Workspace"
+}

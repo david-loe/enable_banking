@@ -1,0 +1,364 @@
+{
+ "actions": [],
+ "autoname": "hash",
+ "creation": "2026-06-18 00:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "identity_section",
+  "connection",
+  "company",
+  "resource_uid",
+  "identification_hash",
+  "identification_hashes_json",
+  "mapping_section",
+  "bank_account",
+  "automatic_sync",
+  "mapping_column",
+  "masked_identifier",
+  "provider_section",
+  "account_name",
+  "account_description",
+  "product",
+  "provider_column",
+  "currency",
+  "usage",
+  "cash_account_type",
+  "psu_status",
+  "account_metadata_json",
+  "balance_section",
+  "booked_balance",
+  "available_balance",
+  "balance_column",
+  "balance_currency",
+  "balance_as_of",
+  "latest_balances_json",
+  "synchronization_section",
+  "sync_status",
+  "last_sync_attempt_at",
+  "last_sync_success_at",
+  "last_successful_end_date",
+  "sync_column",
+  "last_fetched_count",
+  "last_created_count",
+  "last_duplicate_count",
+  "last_skipped_count",
+  "last_failed_count",
+  "last_error"
+ ],
+ "fields": [
+  {
+   "fieldname": "identity_section",
+   "fieldtype": "Section Break",
+   "label": "Provider Identity"
+  },
+  {
+   "fieldname": "connection",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Connection",
+   "options": "Enable Banking Connection",
+   "reqd": 1
+  },
+  {
+   "fetch_from": "connection.company",
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Company",
+   "options": "Company",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "resource_uid",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Current Session Resource UID",
+   "no_copy": 1,
+   "read_only": 1,
+   "reqd": 1,
+   "unique": 1
+  },
+  {
+   "fieldname": "identification_hash",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Primary Identification Hash",
+   "length": 64,
+   "no_copy": 1,
+   "read_only": 1,
+   "reqd": 1,
+   "unique": 1
+  },
+  {
+   "fieldname": "identification_hashes_json",
+   "fieldtype": "Code",
+   "hidden": 1,
+   "label": "Identification Hashes",
+   "no_copy": 1,
+   "options": "JSON",
+   "read_only": 1
+  },
+  {
+   "fieldname": "mapping_section",
+   "fieldtype": "Section Break",
+   "label": "ERPNext Mapping"
+  },
+  {
+   "fieldname": "bank_account",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Bank Account",
+   "options": "Bank Account",
+   "unique": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "automatic_sync",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Automatic Sync"
+  },
+  {
+   "fieldname": "mapping_column",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "masked_identifier",
+   "fieldtype": "Data",
+   "label": "Masked Account Identifier",
+   "read_only": 1
+  },
+  {
+   "fieldname": "provider_section",
+   "fieldtype": "Section Break",
+   "label": "Provider Metadata"
+  },
+  {
+   "fieldname": "account_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Account Name",
+   "read_only": 1
+  },
+  {
+   "fieldname": "account_description",
+   "fieldtype": "Small Text",
+   "label": "Account Description",
+   "read_only": 1
+  },
+  {
+   "fieldname": "product",
+   "fieldtype": "Data",
+   "label": "Product",
+   "read_only": 1
+  },
+  {
+   "fieldname": "provider_column",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "currency",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Currency",
+   "options": "Currency",
+   "read_only": 1
+  },
+  {
+   "fieldname": "usage",
+   "fieldtype": "Data",
+   "label": "Usage",
+   "read_only": 1
+  },
+  {
+   "fieldname": "cash_account_type",
+   "fieldtype": "Data",
+   "label": "Cash Account Type",
+   "read_only": 1
+  },
+  {
+   "fieldname": "psu_status",
+   "fieldtype": "Data",
+   "label": "PSU Status",
+   "read_only": 1
+  },
+  {
+   "fieldname": "account_metadata_json",
+   "fieldtype": "Code",
+   "label": "Normalized Account Metadata",
+   "no_copy": 1,
+   "options": "JSON",
+   "read_only": 1
+  },
+  {
+   "fieldname": "balance_section",
+   "fieldtype": "Section Break",
+   "label": "Latest Balances"
+  },
+  {
+   "fieldname": "booked_balance",
+   "fieldtype": "Currency",
+   "label": "Booked Balance",
+   "options": "balance_currency",
+   "read_only": 1
+  },
+  {
+   "fieldname": "available_balance",
+   "fieldtype": "Currency",
+   "label": "Available Balance",
+   "options": "balance_currency",
+   "read_only": 1
+  },
+  {
+   "fieldname": "balance_column",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "balance_currency",
+   "fieldtype": "Link",
+   "label": "Balance Currency",
+   "options": "Currency",
+   "read_only": 1
+  },
+  {
+   "fieldname": "balance_as_of",
+   "fieldtype": "Datetime",
+   "label": "Balance As Of",
+   "read_only": 1
+  },
+  {
+   "fieldname": "latest_balances_json",
+   "fieldtype": "Code",
+   "label": "Normalized Balances",
+   "no_copy": 1,
+   "options": "JSON",
+   "read_only": 1
+  },
+  {
+   "fieldname": "synchronization_section",
+   "fieldtype": "Section Break",
+   "label": "Synchronization"
+  },
+  {
+   "default": "Never Synced",
+   "fieldname": "sync_status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Sync Status",
+   "options": "Never Synced\nQueued\nIn Progress\nSuccess\nFailed\nDisabled",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "last_sync_attempt_at",
+   "fieldtype": "Datetime",
+   "label": "Last Sync Attempt At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "last_sync_success_at",
+   "fieldtype": "Datetime",
+   "label": "Last Sync Success At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "last_successful_end_date",
+   "fieldtype": "Date",
+   "label": "Last Successful End Date",
+   "read_only": 1
+  },
+  {
+   "fieldname": "sync_column",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "0",
+   "fieldname": "last_fetched_count",
+   "fieldtype": "Int",
+   "label": "Last Fetched Count",
+   "non_negative": 1,
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "last_created_count",
+   "fieldtype": "Int",
+   "label": "Last Created Count",
+   "non_negative": 1,
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "last_duplicate_count",
+   "fieldtype": "Int",
+   "label": "Last Duplicate Count",
+   "non_negative": 1,
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "last_skipped_count",
+   "fieldtype": "Int",
+   "label": "Last Skipped Non-booked Count",
+   "non_negative": 1,
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "last_failed_count",
+   "fieldtype": "Int",
+   "label": "Last Failed Count",
+   "non_negative": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "last_error",
+   "fieldtype": "Small Text",
+   "label": "Sanitized Last Error",
+   "read_only": 1
+  }
+ ],
+ "links": [
+  {
+   "group": "Transactions",
+   "link_doctype": "Bank Transaction",
+   "link_fieldname": "enable_banking_account"
+  }
+ ],
+ "modified": "2026-06-18 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Enable Banking",
+ "name": "Enable Banking Account",
+ "naming_rule": "Random",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Accounts Manager",
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "write": 1
+  }
+ ],
+ "search_fields": "account_name,masked_identifier,bank_account",
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "account_name",
+ "track_changes": 1
+}

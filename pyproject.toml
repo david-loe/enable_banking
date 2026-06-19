@@ -3,11 +3,13 @@ name = "enable_banking"
 authors = [
     { name = "david-loe", email = "kontakt@david-loe.de"}
 ]
-description = "Integrate Enalbe Banking APIs to automatically sync bank transactions"
+description = "Integrate Enable Banking APIs to automatically sync bank transactions"
 requires-python = ">=3.14"
 readme = "README.md"
 dynamic = ["version"]
 dependencies = [
+    "PyJWT[crypto]>=2.8,<3",
+    "requests>=2.31,<3",
     # "frappe~=16.0.0" # Installed and managed by bench.
 ]
 

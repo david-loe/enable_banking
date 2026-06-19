@@ -1,14 +1,14 @@
 app_name = "enable_banking"
 app_title = "Enable Banking"
 app_publisher = "david-loe"
-app_description = "Integrate Enalbe Banking APIs to automatically sync bank transactions"
+app_description = "Integrate Enable Banking APIs to automatically sync bank transactions"
 app_email = "kontakt@david-loe.de"
 app_license = "agpl-3.0"
 
 # Apps
 # ------------------
 
-# required_apps = []
+required_apps = ["erpnext"]
 
 # Each item in the list will be shown as an app in the apps page
 # add_to_apps_screen = [
@@ -85,8 +85,8 @@ app_license = "agpl-3.0"
 # Installation
 # ------------
 
-# before_install = "enable_banking.install.before_install"
-# after_install = "enable_banking.install.after_install"
+after_install = "enable_banking.setup.after_install"
+after_migrate = "enable_banking.setup.after_migrate"
 
 # Uninstallation
 # ------------
@@ -149,28 +149,19 @@ app_license = "agpl-3.0"
 # Scheduled Tasks
 # ---------------
 
-# scheduler_events = {
-# 	"all": [
-# 		"enable_banking.tasks.all"
-# 	],
-# 	"daily": [
-# 		"enable_banking.tasks.daily"
-# 	],
-# 	"hourly": [
-# 		"enable_banking.tasks.hourly"
-# 	],
-# 	"weekly": [
-# 		"enable_banking.tasks.weekly"
-# 	],
-# 	"monthly": [
-# 		"enable_banking.tasks.monthly"
-# 	],
-# }
+scheduler_events = {
+	"hourly": [
+		"enable_banking.tasks.enqueue_scheduled_account_syncs",
+	],
+	"daily": [
+		"enable_banking.tasks.purge_consumed_authorizations",
+	],
+}
 
 # Testing
 # -------
 
-# before_tests = "enable_banking.install.before_tests"
+before_tests = "enable_banking.setup.before_tests"
 
 # Extend DocType Class
 # ------------------------------
@@ -255,4 +246,3 @@ app_license = "agpl-3.0"
 # ------------
 # List of apps whose translatable strings should be excluded from this app's translations.
 # ignore_translatable_strings_from = []
-

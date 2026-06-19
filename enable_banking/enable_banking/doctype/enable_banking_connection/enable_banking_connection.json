@@ -1,0 +1,232 @@
+{
+ "actions": [],
+ "autoname": "hash",
+ "creation": "2026-06-18 00:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "connection_section",
+  "authorization_status",
+  "company",
+  "parent_gl_account",
+  "automatic_sync",
+  "connection_column",
+  "aspsp_name",
+  "aspsp_country",
+  "psu_type",
+  "provider_section",
+  "provider_session_id",
+  "authorization",
+  "valid_from",
+  "valid_until",
+  "health_section",
+  "last_health_check_at",
+  "last_successful_health_check_at",
+  "last_authorized_at",
+  "closed_at",
+  "sync_section",
+  "last_sync_attempt_at",
+  "last_sync_success_at",
+  "sync_counts",
+  "last_error"
+ ],
+ "fields": [
+  {
+   "fieldname": "connection_section",
+   "fieldtype": "Section Break",
+   "label": "Connection"
+  },
+  {
+   "default": "AUTHORIZED",
+   "fieldname": "authorization_status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Authorization Status",
+   "options": "AUTHORIZED\nCANCELLED\nCLOSED\nEXPIRED\nINVALID\nPENDING_AUTHORIZATION\nRETURNED_FROM_BANK\nREVOKED",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Company",
+   "options": "Company",
+   "reqd": 1
+  },
+  {
+   "fieldname": "parent_gl_account",
+   "fieldtype": "Link",
+   "label": "Parent Bank GL Account",
+   "options": "Account",
+   "reqd": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "automatic_sync",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Automatic Sync"
+  },
+  {
+   "fieldname": "connection_column",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "aspsp_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "ASPSP Name",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "aspsp_country",
+   "fieldtype": "Data",
+   "label": "ASPSP Country",
+   "length": 2,
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "psu_type",
+   "fieldtype": "Select",
+   "label": "PSU Type",
+   "options": "personal\nbusiness",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "provider_section",
+   "fieldtype": "Section Break",
+   "label": "Provider Session"
+  },
+  {
+   "fieldname": "provider_session_id",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Provider Session ID",
+   "no_copy": 1,
+   "read_only": 1,
+   "reqd": 1,
+   "unique": 1
+  },
+  {
+   "fieldname": "authorization",
+   "fieldtype": "Link",
+   "label": "Source Authorization",
+   "no_copy": 1,
+   "options": "Enable Banking Authorization",
+   "read_only": 1
+  },
+  {
+   "fieldname": "valid_from",
+   "fieldtype": "Datetime",
+   "label": "Valid From",
+   "read_only": 1
+  },
+  {
+   "fieldname": "valid_until",
+   "fieldtype": "Datetime",
+   "in_list_view": 1,
+   "label": "Valid Until",
+   "read_only": 1
+  },
+  {
+   "fieldname": "health_section",
+   "fieldtype": "Section Break",
+   "label": "Health"
+  },
+  {
+   "fieldname": "last_health_check_at",
+   "fieldtype": "Datetime",
+   "label": "Last Health Check At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "last_successful_health_check_at",
+   "fieldtype": "Datetime",
+   "label": "Last Successful Health Check At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "last_authorized_at",
+   "fieldtype": "Datetime",
+   "label": "Last Authorized At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "closed_at",
+   "fieldtype": "Datetime",
+   "label": "Closed At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "sync_section",
+   "fieldtype": "Section Break",
+   "label": "Last Account Synchronization"
+  },
+  {
+   "fieldname": "last_sync_attempt_at",
+   "fieldtype": "Datetime",
+   "label": "Last Sync Attempt At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "last_sync_success_at",
+   "fieldtype": "Datetime",
+   "label": "Last Sync Success At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "sync_counts",
+   "fieldtype": "Data",
+   "label": "Last Import Counts",
+   "read_only": 1
+  },
+  {
+   "fieldname": "last_error",
+   "fieldtype": "Small Text",
+   "label": "Sanitized Last Error",
+   "read_only": 1
+  }
+ ],
+ "links": [
+  {
+   "group": "Accounts",
+   "link_doctype": "Enable Banking Account",
+   "link_fieldname": "connection"
+  }
+ ],
+ "modified": "2026-06-18 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Enable Banking",
+ "name": "Enable Banking Connection",
+ "naming_rule": "Random",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Accounts Manager",
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "aspsp_name",
+ "track_changes": 1
+}

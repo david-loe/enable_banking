@@ -1,0 +1,204 @@
+{
+ "actions": [],
+ "autoname": "hash",
+ "creation": "2026-06-18 00:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "authorization_section",
+  "status",
+  "initiating_user",
+  "expires_at",
+  "consumed_at",
+  "state_hash",
+  "provider_authorization_id",
+  "onboarding_section",
+  "company",
+  "parent_gl_account",
+  "onboarding_column",
+  "aspsp_name",
+  "aspsp_country",
+  "psu_type",
+  "consent_days",
+  "automatic_sync",
+  "result_section",
+  "connection",
+  "error_message"
+ ],
+ "fields": [
+  {
+   "fieldname": "authorization_section",
+   "fieldtype": "Section Break",
+   "label": "One-time Authorization"
+  },
+  {
+   "default": "Pending",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Status",
+   "options": "Pending\nConsumed\nCancelled\nFailed\nExpired",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "initiating_user",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Initiating User",
+   "options": "User",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "expires_at",
+   "fieldtype": "Datetime",
+   "in_list_view": 1,
+   "label": "Expires At",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "consumed_at",
+   "fieldtype": "Datetime",
+   "label": "Consumed At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "state_hash",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "State Hash",
+   "length": 64,
+   "no_copy": 1,
+   "read_only": 1,
+   "reqd": 1,
+   "unique": 1
+  },
+  {
+   "fieldname": "provider_authorization_id",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Provider Authorization ID",
+   "no_copy": 1,
+   "read_only": 1,
+   "unique": 1
+  },
+  {
+   "fieldname": "onboarding_section",
+   "fieldtype": "Section Break",
+   "label": "Onboarding Request"
+  },
+  {
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Company",
+   "options": "Company",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "parent_gl_account",
+   "fieldtype": "Link",
+   "label": "Parent Bank GL Account",
+   "options": "Account",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "onboarding_column",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "aspsp_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "ASPSP Name",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "aspsp_country",
+   "fieldtype": "Data",
+   "label": "ASPSP Country",
+   "length": 2,
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "psu_type",
+   "fieldtype": "Select",
+   "label": "PSU Type",
+   "options": "personal\nbusiness",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "default": "90",
+   "fieldname": "consent_days",
+   "fieldtype": "Int",
+   "label": "Consent Days",
+   "non_negative": 1,
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "automatic_sync",
+   "fieldtype": "Check",
+   "label": "Automatic Sync",
+   "read_only": 1
+  },
+  {
+   "fieldname": "result_section",
+   "fieldtype": "Section Break",
+   "label": "Result"
+  },
+  {
+   "fieldname": "connection",
+   "fieldtype": "Link",
+   "label": "Enable Banking Connection",
+   "options": "Enable Banking Connection",
+   "read_only": 1
+  },
+  {
+   "fieldname": "error_message",
+   "fieldtype": "Small Text",
+   "label": "Sanitized Error",
+   "read_only": 1
+  }
+ ],
+ "links": [],
+ "modified": "2026-06-18 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Enable Banking",
+ "name": "Enable Banking Authorization",
+ "naming_rule": "Random",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Accounts Manager",
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "write": 1
+  }
+ ],
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "aspsp_name",
+ "track_changes": 1
+}
