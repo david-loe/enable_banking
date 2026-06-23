@@ -95,6 +95,9 @@ jobs:
           bench new-site --db-root-password root --admin-password admin test_site
           bench --site test_site install-app enable_banking
           bench --site test_site migrate
+          SETUP_ARGS='[{"language":"English","email":"test@enable-banking.invalid","full_name":"Enable Banking Test User","password":"test","country":"Germany","timezone":"Europe/Berlin","currency":"EUR","company_name":"_Enable Banking Test Company","company_abbr":"_EBT","fy_start_date":"2026-01-01","fy_end_date":"2026-12-31","chart_of_accounts":"Standard","domain":"Services","enable_telemetry":0}]'
+          bench --site test_site execute frappe.desk.page.setup_wizard.setup_wizard.setup_complete --args "$SETUP_ARGS"
+          bench --site test_site execute frappe.desk.page.setup_wizard.setup_wizard.setup_complete --args "$SETUP_ARGS"
           bench build
         env:
           CI: 'Yes'

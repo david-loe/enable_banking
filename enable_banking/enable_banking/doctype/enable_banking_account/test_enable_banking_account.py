@@ -11,8 +11,8 @@ from enable_banking.onboarding import (
 	map_existing_account,
 	unmap_account,
 )
-from enable_banking.tests.fixtures import TEST_COMPANY as COMPANY
-from enable_banking.tests.fixtures import TEST_PARENT_ACCOUNT as PARENT_ACCOUNT
+from enable_banking.tests.constants import TEST_COMPANY as COMPANY
+from enable_banking.tests.constants import TEST_PARENT_ACCOUNT as PARENT_ACCOUNT
 
 IGNORE_TEST_RECORD_DEPENDENCIES = [
 	"Enable Banking Connection",

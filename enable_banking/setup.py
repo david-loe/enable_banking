@@ -13,9 +13,6 @@ def after_migrate() -> None:
 
 def before_tests() -> None:
 	create_enable_banking_custom_fields()
-	from enable_banking.tests.fixtures import ensure_accounting_fixtures
-
-	ensure_accounting_fixtures()
 
 
 def create_enable_banking_custom_fields() -> None:

@@ -6,8 +6,8 @@ from frappe.tests import IntegrationTestCase
 
 from enable_banking.integrity import internal_operation
 from enable_banking.onboarding import _account_identity_hash, create_erpnext_account
-from enable_banking.tests.fixtures import TEST_COMPANY as COMPANY
-from enable_banking.tests.fixtures import TEST_PARENT_ACCOUNT as PARENT_ACCOUNT
+from enable_banking.tests.constants import TEST_COMPANY as COMPANY
+from enable_banking.tests.constants import TEST_PARENT_ACCOUNT as PARENT_ACCOUNT
 
 IGNORE_TEST_RECORD_DEPENDENCIES = [
 	"Enable Banking Authorization",
