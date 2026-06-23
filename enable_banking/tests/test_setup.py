@@ -53,13 +53,19 @@ class TestSetup(unittest.TestCase):
 		self.assertEqual(transaction_key["unique"], 1)
 		self.assertEqual(transaction_key["length"], 64)
 
+	@patch("enable_banking.tests.fixtures.ensure_accounting_fixtures")
 	@patch("enable_banking.setup.create_custom_fields")
-	def test_install_and_migrate_hooks_are_idempotent(self, create_custom_fields):
+	def test_install_and_migrate_hooks_are_idempotent(
+		self,
+		create_custom_fields,
+		ensure_accounting_fixtures,
+	):
 		setup.after_install()
 		setup.after_migrate()
 		setup.before_tests()
 
 		self.assertEqual(create_custom_fields.call_count, 3)
+		ensure_accounting_fixtures.assert_called_once_with()
 		for call in create_custom_fields.call_args_list:
 			self.assertEqual(call.kwargs, {"update": True})
 			self.assertEqual(call.args, (setup.get_custom_fields(),))
