@@ -10,6 +10,14 @@ from enable_banking.enable_banking.doctype.enable_banking_settings.enable_bankin
 
 
 class TestEnableBankingSettings(unittest.TestCase):
+	def test_private_key_is_not_managed_by_regular_settings_save(self):
+		settings = object.__new__(EnableBankingSettings)
+		settings.flags = Mock()
+
+		settings.__setup__()
+
+		self.assertEqual(settings.flags.ignore_save_passwords, ["private_key"])
+
 	@patch(
 		"enable_banking.enable_banking.doctype.enable_banking_settings.enable_banking_settings."
 		"set_encrypted_password"
@@ -44,3 +52,27 @@ class TestEnableBankingSettings(unittest.TestCase):
 			1,
 		)
 		self.assertEqual(result, {"configured": True})
+
+	@patch(
+		"enable_banking.enable_banking.doctype.enable_banking_settings.enable_banking_settings."
+		"remove_encrypted_password"
+	)
+	def test_clear_private_key_removes_encrypted_key(self, remove_encrypted_password):
+		settings = object.__new__(EnableBankingSettings)
+		frappe_mock = Mock()
+
+		with patch.object(settings_module, "frappe", frappe_mock):
+			result = settings.clear_private_key()
+
+		frappe_mock.only_for.assert_called_once_with("System Manager")
+		remove_encrypted_password.assert_called_once_with(
+			"Enable Banking Settings",
+			"Enable Banking Settings",
+			"private_key",
+		)
+		frappe_mock.db.set_single_value.assert_called_once_with(
+			"Enable Banking Settings",
+			"private_key_configured",
+			0,
+		)
+		self.assertEqual(result, {"configured": False})

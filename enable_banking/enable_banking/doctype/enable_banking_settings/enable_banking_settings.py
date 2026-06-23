@@ -9,6 +9,9 @@ from enable_banking.configuration import SETTINGS_DOCTYPE, validate_private_key
 
 
 class EnableBankingSettings(Document):
+	def __setup__(self):
+		self.flags.ignore_save_passwords = ["private_key"]
+
 	def onload(self):
 		from enable_banking.onboarding import get_callback_url
 
