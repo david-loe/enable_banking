@@ -200,18 +200,58 @@ class TestEnableBankingClient(unittest.TestCase):
 
 		self.sleep.assert_called_once_with(60.0)
 
-	def test_api_error_exposes_only_status_and_error_code(self):
+	def test_api_error_preserves_sanitized_provider_body(self):
 		self.session.request.return_value = make_response(
 			400,
-			{"code": "WRONG_REQUEST_PARAMETERS", "detail": "IBAN FI001234567"},
+			{
+				"error": "WRONG_REQUEST_PARAMETERS",
+				"message": "Account account_id acc-123 failed for session session-456.",
+				"detail": (
+					"IBAN FI2112345600000785 JWT eyJheader.payload.signature "
+					"credentials: bank-password"
+				),
+			},
 		)
 
 		with self.assertRaises(EnableBankingAPIError) as caught:
 			self.client.get_application()
 
-		self.assertEqual(caught.exception.status_code, 400)
+		exc = caught.exception
+		self.assertEqual(exc.status_code, 400)
+		self.assertEqual(exc.error_code, "WRONG_REQUEST_PARAMETERS")
+		self.assertEqual(exc.provider_error, "WRONG_REQUEST_PARAMETERS")
+		self.assertEqual(
+			exc.provider_message,
+			"Account account_id [REDACTED] failed for session [REDACTED].",
+		)
+		self.assertEqual(
+			exc.provider_detail,
+			"IBAN [REDACTED IBAN] JWT [REDACTED JWT] credentials: [REDACTED]",
+		)
+		self.assertIn("Error code: WRONG_REQUEST_PARAMETERS.", str(exc))
+		self.assertIn("Message: Account account_id [REDACTED]", str(exc))
+		self.assertIn("Detail: IBAN [REDACTED IBAN]", str(exc))
+		for sensitive_value in (
+			"acc-123",
+			"session-456",
+			"FI2112345600000785",
+			"eyJheader",
+			"bank-password",
+		):
+			with self.subTest(sensitive_value=sensitive_value):
+				self.assertNotIn(sensitive_value, str(exc))
+
+	def test_api_error_uses_legacy_code_when_error_is_missing(self):
+		self.session.request.return_value = make_response(
+			400,
+			{"code": "WRONG_REQUEST_PARAMETERS"},
+		)
+
+		with self.assertRaises(EnableBankingAPIError) as caught:
+			self.client.get_application()
+
+		self.assertEqual(caught.exception.provider_error, "WRONG_REQUEST_PARAMETERS")
 		self.assertEqual(caught.exception.error_code, "WRONG_REQUEST_PARAMETERS")
-		self.assertNotIn("FI001234567", str(caught.exception))
 
 	@patch("enable_banking.client.frappe.logger")
 	def test_log_sanitizer_redacts_secrets(self, _logger):
@@ -228,3 +268,24 @@ class TestEnableBankingClient(unittest.TestCase):
 		self.assertEqual(sanitized["authorization"], "[REDACTED]")
 		self.assertEqual(sanitized["account_id"], "[REDACTED]")
 		self.assertNotIn("secret", sanitized["message"])
+
+	def test_log_sanitizer_redacts_free_text_bank_and_auth_identifiers(self):
+		sanitized = sanitize_for_log(
+			"account_id acc-123 session session-456 "
+			"IBAN FI2112345600000785 credentials: bank-password"
+		)
+
+		for sensitive_value in (
+			"acc-123",
+			"session-456",
+			"FI2112345600000785",
+			"bank-password",
+		):
+			with self.subTest(sensitive_value=sensitive_value):
+				self.assertNotIn(sensitive_value, sanitized)
+
+	def test_log_sanitizer_keeps_ordinary_session_text(self):
+		self.assertEqual(
+			sanitize_for_log("The provider session is not authorized."),
+			"The provider session is not authorized.",
+		)

@@ -12,6 +12,7 @@ def log_operational_error(operation: str, exc: Exception | str) -> None:
 	for label, attribute in (
 		("HTTP status", "status_code"),
 		("Endpoint", "endpoint"),
+		("Provider error", "provider_error"),
 	):
 		if value := getattr(exc, attribute, None):
 			details.append(f"{label}: {sanitize_for_log(value)}")

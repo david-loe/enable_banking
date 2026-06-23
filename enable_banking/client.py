@@ -37,9 +37,13 @@ SENSITIVE_KEYS = frozenset(
 		"credentials",
 		"iban",
 		"account_id",
+		"account_ids",
 		"all_account_ids",
 		"identification",
 		"private_key",
+		"password",
+		"secret",
+		"session_id",
 		"token",
 		"jwt",
 	}
@@ -53,6 +57,38 @@ RESOURCE_PATH_PATTERN = re.compile(
 	r"/(accounts|sessions)/[^/?]+",
 	flags=re.IGNORECASE,
 )
+IBAN_PATTERN = re.compile(r"\b[A-Z]{2}\d{2}[A-Z0-9]{11,30}\b")
+LABELED_RESOURCE_ID_PATTERN = re.compile(
+	r"\b((?:account|session)[\s_-]?id)((?:\s*[:=]\s*)|\s+)([^\s,;]+)",
+	flags=re.IGNORECASE,
+)
+PLAIN_RESOURCE_ID_PATTERN = re.compile(
+	r"\b(account|session)(\s+)([^\s,;]+)",
+	flags=re.IGNORECASE,
+)
+LABELED_SECRET_PATTERN = re.compile(
+	r"\b(credentials?|password|secret|token|jwt|authorization(?:[\s_-]?code)?)"
+	r"((?:\s*[:=]\s*)|\s+)([^\s,;]+)",
+	flags=re.IGNORECASE,
+)
+NON_IDENTIFIER_WORDS = frozenset(
+	{
+		"a",
+		"an",
+		"are",
+		"authorized",
+		"before",
+		"could",
+		"failed",
+		"is",
+		"not",
+		"still",
+		"the",
+		"this",
+		"was",
+	}
+)
+IDENTIFIER_LIKE_PATTERN = re.compile(r"[\d_.:-]")
 
 
 class EnableBankingClient:
@@ -302,23 +338,34 @@ class EnableBankingClient:
 				)
 			return data
 
-		error_code = None
+		provider_error = None
+		provider_message = None
+		provider_detail = None
 		try:
 			error_data = response.json()
 			if isinstance(error_data, dict):
-				error_code = error_data.get("code") or error_data.get("error")
+				provider_error = _sanitized_error_value(error_data.get("error") or error_data.get("code"))
+				provider_message = _sanitized_error_value(error_data.get("message"))
+				provider_detail = _sanitized_error_value(error_data.get("detail"))
 		except requests.JSONDecodeError:
 			pass
 
 		endpoint = _redact_endpoint(path)
 		message = f"Enable Banking API returned HTTP {response.status_code} for {method} {endpoint}."
-		if error_code:
-			message += f" Error code: {sanitize_for_log(str(error_code))}."
+		if provider_error:
+			message += f" Error code: {provider_error}."
+		if provider_message:
+			message += f" Message: {provider_message}."
+		if provider_detail:
+			message += f" Detail: {provider_detail}."
 		raise EnableBankingAPIError(
 			message,
 			status_code=response.status_code,
-			error_code=str(error_code) if error_code else None,
+			error_code=provider_error,
 			endpoint=endpoint,
+			provider_error=provider_error,
+			provider_message=provider_message,
+			provider_detail=provider_detail,
 		)
 
 	def _log_retry(
@@ -355,8 +402,59 @@ def sanitize_for_log(value: Any) -> Any:
 
 	sanitized = PEM_PATTERN.sub("[REDACTED PRIVATE KEY]", value)
 	sanitized = JWT_PATTERN.sub("[REDACTED JWT]", sanitized)
+	sanitized = IBAN_PATTERN.sub("[REDACTED IBAN]", sanitized)
 	sanitized = RESOURCE_PATH_PATTERN.sub(r"/\1/[REDACTED]", sanitized)
+	sanitized = LABELED_RESOURCE_ID_PATTERN.sub(_redact_labeled_resource_id, sanitized)
+	sanitized = PLAIN_RESOURCE_ID_PATTERN.sub(_redact_labeled_resource_id, sanitized)
+	sanitized = LABELED_SECRET_PATTERN.sub(_redact_labeled_secret, sanitized)
 	return sanitized
+
+
+def _sanitized_error_value(value: Any) -> str | None:
+	if value is None:
+		return None
+	sanitized = sanitize_for_log(value)
+	if not isinstance(sanitized, str):
+		sanitized = str(sanitized)
+	return sanitized
+
+
+def _redact_labeled_resource_id(match: re.Match[str]) -> str:
+	label = match.group(1)
+	separator = match.group(2)
+	value = match.group(3)
+	trailing = ""
+	if value.endswith("."):
+		value = value[:-1]
+		trailing = "."
+	if value.startswith("[REDACTED"):
+		return match.group(0)
+	normalized_label = label.lower().replace("_", " ").replace("-", " ")
+	if normalized_label in {"account", "session"} and value.lower().replace("_", " ") in {
+		"account id",
+		"session id",
+	}:
+		return match.group(0)
+	if " id" not in f" {normalized_label}" and (
+		value.lower() in NON_IDENTIFIER_WORDS or not IDENTIFIER_LIKE_PATTERN.search(value)
+	):
+		return match.group(0)
+	return f"{label}{separator}[REDACTED]{trailing}"
+
+
+def _redact_labeled_secret(match: re.Match[str]) -> str:
+	label = match.group(1)
+	separator = match.group(2)
+	value = match.group(3)
+	trailing = ""
+	if value.endswith("."):
+		value = value[:-1]
+		trailing = "."
+	if value.startswith("[REDACTED"):
+		return match.group(0)
+	if value.lower() in NON_IDENTIFIER_WORDS:
+		return match.group(0)
+	return f"{label}{separator}[REDACTED]{trailing}"
 
 
 def _without_none(values: Mapping[str, Any] | None) -> dict[str, Any] | None:
