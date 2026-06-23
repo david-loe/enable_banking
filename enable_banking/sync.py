@@ -25,7 +25,7 @@ from enable_banking.onboarding import (
 )
 from enable_banking.operations import log_operational_error, sanitized_error
 
-AVAILABLE_BALANCE_PRECEDENCE = ("ITAV", "CLAV", "FWAV")
+AVAILABLE_BALANCE_PRECEDENCE = ("ITAV", "CLAV", "FWAV", "XPCD")
 BOOKED_BALANCE_PRECEDENCE = ("ITBD", "CLBD")
 AUTHORIZED_STATUS = "AUTHORIZED"
 BOOKED_TRANSACTION_STATUS = "BOOK"
@@ -499,16 +499,17 @@ def _update_account_balance_fields(
 		values.update(
 			{
 				"booked_balance": snapshot.get("booked_amount"),
-				"available_balance": snapshot.get("available_amount"),
+				"available_balance": _currency_amount_or_zero(snapshot.get("available_amount")),
 				"balance_currency": snapshot.get("currency"),
 				"balance_as_of": snapshot.get("as_of"),
 			}
 		)
+		values["booked_balance"] = _currency_amount_or_zero(values.get("booked_balance"))
 	else:
 		if snapshot.get("booked") is None:
-			values["booked_balance"] = None
+			values["booked_balance"] = 0
 		if snapshot.get("available") is None:
-			values["available_balance"] = None
+			values["available_balance"] = 0
 		if snapshot.get("booked") is None and snapshot.get("available") is None:
 			values.update({"balance_currency": None, "balance_as_of": None})
 	_update_doc(account, values)
@@ -527,17 +528,22 @@ def _update_mapped_bank_account_balance_fields(account, connection, snapshot: di
 		values.update(
 			{
 				"enable_banking_booked_balance": snapshot.get("booked_amount"),
-				"enable_banking_available_balance": snapshot.get("available_amount"),
+				"enable_banking_available_balance": _currency_amount_or_zero(
+					snapshot.get("available_amount")
+				),
 				"enable_banking_balance_currency": snapshot.get("currency"),
 				"enable_banking_balance_as_of": snapshot.get("as_of"),
 				"enable_banking_last_sync_at": now_datetime(),
 			}
 		)
+		values["enable_banking_booked_balance"] = _currency_amount_or_zero(
+			values.get("enable_banking_booked_balance")
+		)
 	else:
 		if snapshot.get("booked") is None:
-			values["enable_banking_booked_balance"] = None
+			values["enable_banking_booked_balance"] = 0
 		if snapshot.get("available") is None:
-			values["enable_banking_available_balance"] = None
+			values["enable_banking_available_balance"] = 0
 		if snapshot.get("booked") is None and snapshot.get("available") is None:
 			values.update(
 				{
@@ -587,6 +593,10 @@ def _selected_currency(selected_balances: list[dict[str, Any]]) -> str | None:
 		if balance and balance.get("amount") is not None
 	]
 	return currencies[0] if currencies and all(currency == currencies[0] for currency in currencies) else None
+
+
+def _currency_amount_or_zero(amount: Any) -> Any:
+	return amount if amount is not None else 0
 
 
 def _balance_as_of(balance: dict[str, Any]) -> datetime | None:

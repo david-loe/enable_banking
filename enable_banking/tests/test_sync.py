@@ -48,6 +48,18 @@ class TestBalanceNormalization(unittest.TestCase):
 		self.assertEqual(snapshot["available"]["balance_type"], "CLAV")
 		self.assertEqual(snapshot["available_amount"], Decimal("40.00"))
 
+	def test_expected_balance_is_available_fallback(self):
+		normalized = sync.normalize_balances(
+			{"balances": [_balance("Expected balance", "XPCD", "179.84", "EUR", "2026-06-23")]}
+		)
+
+		snapshot = sync.select_balance_snapshot(normalized)
+
+		self.assertEqual(snapshot["available"]["balance_type"], "XPCD")
+		self.assertEqual(snapshot["available_amount"], Decimal("179.84"))
+		self.assertIsNone(snapshot["booked"])
+		self.assertEqual(str(snapshot["as_of"]), "2026-06-23 00:00:00")
+
 	def test_currency_match_requires_selected_balances_to_match_expected_currency(self):
 		snapshot = sync.select_balance_snapshot(
 			sync.normalize_balances(
@@ -134,7 +146,7 @@ class TestBalancePersistence(unittest.TestCase):
 
 		values = account.db_set.call_args.args[0]
 		self.assertEqual(values["booked_balance"], Decimal("13.39"))
-		self.assertIsNone(values["available_balance"])
+		self.assertEqual(values["available_balance"], 0)
 		self.assertEqual(values["balance_currency"], "EUR")
 		self.assertIsNone(values["balance_as_of"])
 
@@ -150,8 +162,24 @@ class TestBalancePersistence(unittest.TestCase):
 
 		values = account.db_set.call_args.args[0]
 		self.assertEqual(values["available_balance"], Decimal("12.34"))
-		self.assertIsNone(values["booked_balance"])
+		self.assertEqual(values["booked_balance"], 0)
 		self.assertEqual(values["balance_currency"], "EUR")
+
+	def test_expected_balance_updates_available_and_clears_booked_balance(self):
+		account = Mock()
+		account.currency = "EUR"
+		normalized = sync.normalize_balances(
+			{"balances": [_balance("Expected balance", "XPCD", "179.84", "EUR", "2026-06-23")]}
+		)
+		snapshot = sync.select_balance_snapshot(normalized)
+
+		sync._update_account_balance_fields(account, normalized, snapshot)
+
+		values = account.db_set.call_args.args[0]
+		self.assertEqual(values["available_balance"], Decimal("179.84"))
+		self.assertEqual(values["booked_balance"], 0)
+		self.assertEqual(values["balance_currency"], "EUR")
+		self.assertEqual(str(values["balance_as_of"]), "2026-06-23 00:00:00")
 
 	def test_booked_and_available_response_updates_both_balances(self):
 		account = Mock()
@@ -208,7 +236,7 @@ class TestBalancePersistence(unittest.TestCase):
 		sync._update_mapped_bank_account_balance_fields(account, connection, snapshot)
 
 		values = frappe_mock.db.set_value.call_args.args[2]
-		self.assertIsNone(values["enable_banking_booked_balance"])
+		self.assertEqual(values["enable_banking_booked_balance"], 0)
 		self.assertNotIn("enable_banking_available_balance", values)
 		self.assertNotIn("enable_banking_balance_as_of", values)
 
@@ -232,7 +260,7 @@ class TestBalancePersistence(unittest.TestCase):
 
 		values = frappe_mock.db.set_value.call_args.args[2]
 		self.assertEqual(values["enable_banking_booked_balance"], Decimal("10.00"))
-		self.assertIsNone(values["enable_banking_available_balance"])
+		self.assertEqual(values["enable_banking_available_balance"], 0)
 		self.assertEqual(values["enable_banking_balance_currency"], "EUR")
 		self.assertEqual(values["enable_banking_last_sync_at"], "2026-06-18 12:00:00")
 
@@ -289,8 +317,8 @@ class TestBalancePersistence(unittest.TestCase):
 		)
 
 		values = frappe_mock.db.set_value.call_args.args[2]
-		self.assertIsNone(values["enable_banking_booked_balance"])
-		self.assertIsNone(values["enable_banking_available_balance"])
+		self.assertEqual(values["enable_banking_booked_balance"], 0)
+		self.assertEqual(values["enable_banking_available_balance"], 0)
 		self.assertIsNone(values["enable_banking_balance_as_of"])
 
 
