@@ -1,7 +1,6 @@
 <p align="center" >
-<a href="https://enable-banking.com/" style="background: black;display: inline-flex; align-items: center; padding: 16px; text-decoration: none;">
-    <img width="32px" src="./assets/enable-banking-logo-animated.svg">
-    <span style="color: white; margin-left: 16px;  font-size: 16px;  font-weight: 700; un">Enable Banking</span>
+<a href="https://enable-banking.com/">
+    <img  src="./assets/enable-banking-logo-animated.svg">
 </a>
 </p>
 <p align="center">
