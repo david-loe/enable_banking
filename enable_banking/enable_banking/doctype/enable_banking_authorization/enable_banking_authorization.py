@@ -32,6 +32,43 @@ IMMUTABLE_FIELDS = {
 
 
 class EnableBankingAuthorization(Document):
+	# begin: auto-generated types
+	# This code is auto-generated. Do not modify anything in this block.
+
+	from typing import TYPE_CHECKING
+
+	if TYPE_CHECKING:
+		from frappe.types import DF
+
+		aspsp_country: DF.Data
+		aspsp_name: DF.Data
+		automatic_sync: DF.Check
+		company: DF.Link
+		connection: DF.Link | None
+		consent_days: DF.Int
+		consumed_at: DF.Datetime | None
+		error_message: DF.SmallText | None
+		expires_at: DF.Datetime
+		initiating_user: DF.Link
+		parent_gl_account: DF.Link
+		provider_authorization_id: DF.Data | None
+		provider_session_id: DF.Data | None
+		psu_type: DF.Literal["personal", "business"]
+		reauthorization_connection: DF.Link | None
+		state_hash: DF.Data
+		status: DF.Literal[
+			"Pending",
+			"Processing",
+			"Session Created",
+			"Consumed",
+			"Cleanup Required",
+			"Cancelled",
+			"Failed",
+			"Expired",
+		]
+		superseded_session_id: DF.Data | None
+	# end: auto-generated types
+
 	def before_insert(self):
 		require_internal_operation(_("created"))
 

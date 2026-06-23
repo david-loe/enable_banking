@@ -5,7 +5,7 @@ from typing import Any
 
 import frappe
 from frappe import _
-from frappe.utils import get_datetime, now_datetime
+from frappe.utils import cint, get_datetime, now_datetime, validate_email_address
 
 from enable_banking.client import EnableBankingClient
 from enable_banking.configuration import SETTINGS_DOCTYPE
@@ -34,6 +34,7 @@ SYNC_LOCK_TIMEOUT = 35 * 60
 STALE_SYNC_AFTER = timedelta(minutes=40)
 AUTHORIZATION_RETENTION_DAYS = 30
 INACTIVE_SESSION_STATUSES = frozenset({"CANCELLED", "CLOSED", "EXPIRED", "INVALID", "REVOKED"})
+EXPIRY_NOTIFICATION_FREQUENCIES = frozenset({"Daily", "Once"})
 
 
 @frappe.whitelist()
@@ -325,10 +326,106 @@ def purge_consumed_authorizations() -> int:
 	return len(names)
 
 
+def send_connection_expiry_notifications(*, now=None) -> dict[str, int]:
+	settings = frappe.get_single(SETTINGS_DOCTYPE)
+	lead_days = max(cint(getattr(settings, "expiry_notification_lead_days", 7)) or 7, 1)
+	frequency = getattr(settings, "expiry_notification_frequency", None) or "Daily"
+	if frequency not in EXPIRY_NOTIFICATION_FREQUENCIES:
+		frequency = "Daily"
+
+	current = get_datetime(now or now_datetime())
+	cutoff = current + timedelta(days=lead_days)
+	connections = frappe.get_all(
+		CONNECTION_DOCTYPE,
+		filters=[
+			["authorization_status", "=", AUTHORIZED_STATUS],
+			["valid_until", ">", current],
+			["valid_until", "<=", cutoff],
+			["expiry_notification_recipients", "is", "set"],
+		],
+		fields=[
+			"name",
+			"company",
+			"aspsp_name",
+			"aspsp_country",
+			"valid_until",
+			"expiry_notification_recipients",
+			"expiry_notification_last_valid_until",
+		],
+	)
+
+	sent = 0
+	skipped = 0
+	failed = 0
+	for connection in connections:
+		if frequency == "Once" and _expiry_notification_was_sent_for_valid_until(connection):
+			skipped += 1
+			continue
+		try:
+			recipients = _expiry_notification_recipients(connection.expiry_notification_recipients)
+			if not recipients:
+				skipped += 1
+				continue
+			_send_connection_expiry_notification(connection, recipients)
+			if frequency == "Once":
+				frappe.db.set_value(
+					CONNECTION_DOCTYPE,
+					connection.name,
+					{"expiry_notification_last_valid_until": connection.valid_until},
+					update_modified=False,
+				)
+			sent += 1
+		except Exception as exc:
+			failed += 1
+			log_operational_error("connection expiry notification failed", exc)
+
+	return {"sent": sent, "skipped": skipped, "failed": failed}
+
+
 def _update_doc(doc, values: dict[str, Any]) -> None:
 	doc.db_set(values)
 	for key, value in values.items():
 		setattr(doc, key, value)
+
+
+def _expiry_notification_was_sent_for_valid_until(connection) -> bool:
+	last_valid_until = getattr(connection, "expiry_notification_last_valid_until", None)
+	valid_until = getattr(connection, "valid_until", None)
+	if not last_valid_until or not valid_until:
+		return False
+	return get_datetime(last_valid_until) == get_datetime(valid_until)
+
+
+def _expiry_notification_recipients(recipients: str | None) -> list[str]:
+	if not (recipients or "").strip():
+		return []
+	normalized = validate_email_address(recipients, throw=True)
+	return [recipient.strip() for recipient in normalized.split(",") if recipient.strip()]
+
+
+def _send_connection_expiry_notification(connection, recipients: list[str]) -> None:
+	subject = _("Enable Banking authorization expires soon")
+	valid_until = get_datetime(connection.valid_until)
+	message = _(
+		"""
+		<p>The Enable Banking authorization for {aspsp} ({country}) expires on {valid_until}.</p>
+		<p>Company: {company}<br>Connection: {connection}</p>
+		<p>Please reauthorize the connection before expiry to keep synchronization active.</p>
+		"""
+	).format(
+		aspsp=frappe.utils.escape_html(connection.aspsp_name or _("Unknown ASPSP")),
+		country=frappe.utils.escape_html(connection.aspsp_country or ""),
+		valid_until=frappe.utils.escape_html(str(valid_until)),
+		company=frappe.utils.escape_html(connection.company or ""),
+		connection=frappe.utils.escape_html(connection.name),
+	)
+	frappe.sendmail(
+		recipients=recipients,
+		subject=subject,
+		message=message,
+		reference_doctype=CONNECTION_DOCTYPE,
+		reference_name=connection.name,
+	)
 
 
 def _format_counts(result: dict[str, Any]) -> str:

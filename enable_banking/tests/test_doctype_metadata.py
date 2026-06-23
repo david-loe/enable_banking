@@ -77,12 +77,17 @@ class TestDocTypeMetadata(unittest.TestCase):
 			settings["sync_interval"]["options"],
 			"Every Hour\nFour Times a Day\nOnce a Day",
 		)
+		self.assertEqual(settings["expiry_notification_lead_days"]["default"], "7")
+		self.assertEqual(settings["expiry_notification_frequency"]["options"], "Daily\nOnce")
 		self.assertNotIn("api_url", settings)
 		self.assertNotIn("private_key_source", settings)
 		self.assertNotIn("private_key_file", settings)
 		self.assertIn("last_sync_attempt_at", connection)
 		self.assertIn("last_sync_success_at", connection)
 		self.assertIn("sync_counts", connection)
+		self.assertIn("expiry_notification_recipients", connection)
+		self.assertNotIn("read_only", connection["expiry_notification_recipients"])
+		self.assertEqual(connection["expiry_notification_last_valid_until"]["read_only"], 1)
 		self.assertEqual(
 			{shortcut["link_to"] for shortcut in workspace["shortcuts"]},
 			{

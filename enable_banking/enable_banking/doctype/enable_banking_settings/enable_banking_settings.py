@@ -9,6 +9,31 @@ from enable_banking.configuration import SETTINGS_DOCTYPE, validate_private_key
 
 
 class EnableBankingSettings(Document):
+	# begin: auto-generated types
+	# This code is auto-generated. Do not modify anything in this block.
+
+	from typing import TYPE_CHECKING
+
+	if TYPE_CHECKING:
+		from frappe.types import DF
+
+		app_id: DF.Data
+		automatic_sync: DF.Check
+		callback_url: DF.Data | None
+		default_consent_days: DF.Int
+		enabled: DF.Check
+		expiry_notification_frequency: DF.Literal["Daily", "Once"]
+		expiry_notification_lead_days: DF.Int
+		initial_import_days: DF.Int
+		max_transaction_pages: DF.Int
+		max_transactions_per_sync: DF.Int
+		overlap_days: DF.Int
+		private_key: DF.Password | None
+		private_key_configured: DF.Check
+		redirect_url: DF.Data
+		sync_interval: DF.Literal["Every Hour", "Four Times a Day", "Once a Day"]
+	# end: auto-generated types
+
 	def __setup__(self):
 		self.flags.ignore_save_passwords = ["private_key"]
 
@@ -21,11 +46,14 @@ class EnableBankingSettings(Document):
 	def validate(self):
 		if self.sync_interval not in ("Every Hour", "Four Times a Day", "Once a Day"):
 			frappe.throw(_("Select a valid Synchronization Interval."))
+		if self.expiry_notification_frequency not in ("Daily", "Once"):
+			frappe.throw(_("Select a valid Expiry Notification Frequency."))
 		for fieldname in (
 			"initial_import_days",
 			"default_consent_days",
 			"max_transaction_pages",
 			"max_transactions_per_sync",
+			"expiry_notification_lead_days",
 		):
 			if self.get(fieldname) is not None and self.get(fieldname) < 1:
 				frappe.throw(_("{0} must be at least one day.").format(self.meta.get_label(fieldname)))

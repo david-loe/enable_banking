@@ -19,6 +19,9 @@
   "authorization",
   "valid_from",
   "valid_until",
+  "notification_section",
+  "expiry_notification_recipients",
+  "expiry_notification_last_valid_until",
   "health_section",
   "last_health_check_at",
   "last_successful_health_check_at",
@@ -137,6 +140,23 @@
    "read_only": 1
   },
   {
+   "fieldname": "notification_section",
+   "fieldtype": "Section Break",
+   "label": "Expiry Notifications"
+  },
+  {
+   "description": "Comma- or newline-separated email addresses. Leave empty to disable expiry notifications for this connection.",
+   "fieldname": "expiry_notification_recipients",
+   "fieldtype": "Small Text",
+   "label": "Expiry Notification Recipients"
+  },
+  {
+   "fieldname": "expiry_notification_last_valid_until",
+   "fieldtype": "Datetime",
+   "label": "Last Notified Valid Until",
+   "read_only": 1
+  },
+  {
    "fieldname": "health_section",
    "fieldtype": "Section Break",
    "label": "Health"
@@ -202,7 +222,7 @@
    "link_fieldname": "connection"
   }
  ],
- "modified": "2026-06-18 00:00:00.000000",
+ "modified": "2026-06-23 00:00:00.000000",
  "modified_by": "Administrator",
  "module": "Enable Banking",
  "name": "Enable Banking Connection",

@@ -1,6 +1,7 @@
 import frappe
 from frappe import _
 from frappe.model.document import Document
+from frappe.utils import validate_email_address
 
 from enable_banking.integrity import require_internal_operation, validate_immutable_fields
 
@@ -16,6 +17,7 @@ IMMUTABLE_FIELDS = {
 	"authorization",
 	"valid_from",
 	"valid_until",
+	"expiry_notification_last_valid_until",
 	"last_health_check_at",
 	"last_successful_health_check_at",
 	"last_authorized_at",
@@ -28,6 +30,46 @@ IMMUTABLE_FIELDS = {
 
 
 class EnableBankingConnection(Document):
+	# begin: auto-generated types
+	# This code is auto-generated. Do not modify anything in this block.
+
+	from typing import TYPE_CHECKING
+
+	if TYPE_CHECKING:
+		from frappe.types import DF
+
+		aspsp_country: DF.Data
+		aspsp_name: DF.Data
+		authorization: DF.Link | None
+		authorization_status: DF.Literal[
+			"AUTHORIZED",
+			"CANCELLED",
+			"CLOSED",
+			"EXPIRED",
+			"INVALID",
+			"PENDING_AUTHORIZATION",
+			"RETURNED_FROM_BANK",
+			"REVOKED",
+		]
+		automatic_sync: DF.Check
+		closed_at: DF.Datetime | None
+		company: DF.Link
+		expiry_notification_last_valid_until: DF.Datetime | None
+		expiry_notification_recipients: DF.SmallText | None
+		last_authorized_at: DF.Datetime | None
+		last_error: DF.SmallText | None
+		last_health_check_at: DF.Datetime | None
+		last_successful_health_check_at: DF.Datetime | None
+		last_sync_attempt_at: DF.Datetime | None
+		last_sync_success_at: DF.Datetime | None
+		parent_gl_account: DF.Link
+		provider_session_id: DF.Data
+		psu_type: DF.Literal["personal", "business"]
+		sync_counts: DF.Data | None
+		valid_from: DF.Datetime | None
+		valid_until: DF.Datetime | None
+	# end: auto-generated types
+
 	def before_insert(self):
 		require_internal_operation(_("created"))
 
@@ -37,6 +79,8 @@ class EnableBankingConnection(Document):
 			frappe.throw(_("Provider Session ID is required."))
 		if len(self.aspsp_country or "") != 2:
 			frappe.throw(_("ASPSP Country must be a two-letter ISO code."))
+		if self.expiry_notification_recipients:
+			validate_email_address(self.expiry_notification_recipients, throw=True)
 		account = frappe.db.get_value(
 			"Account",
 			self.parent_gl_account,

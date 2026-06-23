@@ -75,6 +75,29 @@ class TestEnableBankingConnection(IntegrationTestCase):
 				ignore_permissions=True,
 			)
 
+	def test_expiry_notification_recipients_are_configurable(self):
+		integration = self._make_integration_account()
+		connection = frappe.get_doc("Enable Banking Connection", integration.connection)
+		connection.expiry_notification_recipients = "manager@example.com\nops@example.com"
+		connection.save(ignore_permissions=True)
+
+		self.assertEqual(
+			frappe.db.get_value(
+				"Enable Banking Connection",
+				connection.name,
+				"expiry_notification_recipients",
+			),
+			"manager@example.com\nops@example.com",
+		)
+
+	def test_invalid_expiry_notification_recipients_are_rejected(self):
+		integration = self._make_integration_account()
+		connection = frappe.get_doc("Enable Banking Connection", integration.connection)
+		connection.expiry_notification_recipients = "not-an-email"
+
+		with self.assertRaises(frappe.InvalidEmailAddressError):
+			connection.save(ignore_permissions=True)
+
 	def _make_integration_account(self):
 		suffix = uuid.uuid4().hex
 		with internal_operation():

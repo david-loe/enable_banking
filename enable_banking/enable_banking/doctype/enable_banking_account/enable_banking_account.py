@@ -47,6 +47,47 @@ SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 
 
 class EnableBankingAccount(Document):
+	# begin: auto-generated types
+	# This code is auto-generated. Do not modify anything in this block.
+
+	from typing import TYPE_CHECKING
+
+	if TYPE_CHECKING:
+		from frappe.types import DF
+
+		account_description: DF.SmallText | None
+		account_metadata_json: DF.Code | None
+		account_name: DF.Data | None
+		automatic_sync: DF.Check
+		available_balance: DF.Currency
+		balance_as_of: DF.Datetime | None
+		balance_currency: DF.Link | None
+		bank_account: DF.Link | None
+		booked_balance: DF.Currency
+		cash_account_type: DF.Data | None
+		company: DF.Link
+		connection: DF.Link
+		currency: DF.Link | None
+		identification_hash: DF.Data
+		identification_hashes_json: DF.Code | None
+		last_created_count: DF.Int
+		last_duplicate_count: DF.Int
+		last_error: DF.SmallText | None
+		last_failed_count: DF.Int
+		last_fetched_count: DF.Int
+		last_skipped_count: DF.Int
+		last_successful_end_date: DF.Date | None
+		last_sync_attempt_at: DF.Datetime | None
+		last_sync_success_at: DF.Datetime | None
+		latest_balances_json: DF.Code | None
+		masked_identifier: DF.Data | None
+		product: DF.Data | None
+		psu_status: DF.Data | None
+		resource_uid: DF.Data
+		sync_status: DF.Literal["Never Synced", "Queued", "In Progress", "Success", "Failed", "Disabled"]
+		usage: DF.Data | None
+	# end: auto-generated types
+
 	def before_insert(self):
 		require_internal_operation(_("created"))
 

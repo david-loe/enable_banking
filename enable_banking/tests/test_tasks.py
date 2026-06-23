@@ -231,6 +231,107 @@ class TestAuthorizationCleanup(unittest.TestCase):
 		)
 
 
+class TestConnectionExpiryNotifications(unittest.TestCase):
+	@patch("enable_banking.tasks.frappe")
+	def test_daily_notification_sends_for_connection_inside_configured_window(self, frappe_mock):
+		connection = _expiring_connection()
+		_configure_expiry_notification_mocks(frappe_mock, connections=[connection])
+
+		result = tasks.send_connection_expiry_notifications(now=datetime(2026, 6, 19, 12, 0))
+
+		self.assertEqual(result, {"sent": 1, "skipped": 0, "failed": 0})
+		frappe_mock.sendmail.assert_called_once()
+		self.assertEqual(
+			frappe_mock.sendmail.call_args.kwargs["recipients"],
+			["manager@example.com", "ops@example.com"],
+		)
+		frappe_mock.db.set_value.assert_not_called()
+		filters = frappe_mock.get_all.call_args.kwargs["filters"]
+		self.assertIn(["authorization_status", "=", "AUTHORIZED"], filters)
+		self.assertIn(["valid_until", ">", datetime(2026, 6, 19, 12, 0)], filters)
+		self.assertIn(["valid_until", "<=", datetime(2026, 6, 26, 12, 0)], filters)
+
+	@patch("enable_banking.tasks.frappe")
+	def test_empty_recipients_are_skipped(self, frappe_mock):
+		connection = _expiring_connection(expiry_notification_recipients="")
+		_configure_expiry_notification_mocks(frappe_mock, connections=[connection])
+
+		result = tasks.send_connection_expiry_notifications(now=datetime(2026, 6, 19, 12, 0))
+
+		self.assertEqual(result, {"sent": 0, "skipped": 1, "failed": 0})
+		frappe_mock.sendmail.assert_not_called()
+
+	@patch("enable_banking.tasks.frappe")
+	def test_once_notification_updates_last_valid_until_after_send(self, frappe_mock):
+		connection = _expiring_connection(expiry_notification_last_valid_until=None)
+		_configure_expiry_notification_mocks(
+			frappe_mock,
+			frequency="Once",
+			connections=[connection],
+		)
+
+		result = tasks.send_connection_expiry_notifications(now=datetime(2026, 6, 19, 12, 0))
+
+		self.assertEqual(result, {"sent": 1, "skipped": 0, "failed": 0})
+		frappe_mock.sendmail.assert_called_once()
+		frappe_mock.db.set_value.assert_called_once_with(
+			"Enable Banking Connection",
+			"CONNECTION-1",
+			{"expiry_notification_last_valid_until": datetime(2026, 6, 25, 12, 0)},
+			update_modified=False,
+		)
+
+	@patch("enable_banking.tasks.frappe")
+	def test_once_notification_skips_same_valid_until(self, frappe_mock):
+		connection = _expiring_connection(expiry_notification_last_valid_until=datetime(2026, 6, 25, 12, 0))
+		_configure_expiry_notification_mocks(
+			frappe_mock,
+			frequency="Once",
+			connections=[connection],
+		)
+
+		result = tasks.send_connection_expiry_notifications(now=datetime(2026, 6, 19, 12, 0))
+
+		self.assertEqual(result, {"sent": 0, "skipped": 1, "failed": 0})
+		frappe_mock.sendmail.assert_not_called()
+		frappe_mock.db.set_value.assert_not_called()
+
+	@patch("enable_banking.tasks.frappe")
+	def test_once_notification_sends_again_for_new_valid_until(self, frappe_mock):
+		connection = _expiring_connection(
+			valid_until=datetime(2026, 6, 25, 12, 0),
+			expiry_notification_last_valid_until=datetime(2026, 6, 24, 12, 0),
+		)
+		_configure_expiry_notification_mocks(
+			frappe_mock,
+			frequency="Once",
+			connections=[connection],
+		)
+
+		result = tasks.send_connection_expiry_notifications(now=datetime(2026, 6, 19, 12, 0))
+
+		self.assertEqual(result, {"sent": 1, "skipped": 0, "failed": 0})
+		frappe_mock.sendmail.assert_called_once()
+
+	@patch("enable_banking.tasks.log_operational_error")
+	@patch("enable_banking.tasks.frappe")
+	def test_notification_failures_do_not_stop_remaining_connections(
+		self,
+		frappe_mock,
+		log_error,
+	):
+		first = _expiring_connection(name="CONNECTION-1")
+		second = _expiring_connection(name="CONNECTION-2")
+		_configure_expiry_notification_mocks(frappe_mock, connections=[first, second])
+		frappe_mock.sendmail.side_effect = [RuntimeError("smtp failed"), None]
+
+		result = tasks.send_connection_expiry_notifications(now=datetime(2026, 6, 19, 12, 0))
+
+		self.assertEqual(result, {"sent": 1, "skipped": 0, "failed": 1})
+		self.assertEqual(frappe_mock.sendmail.call_count, 2)
+		log_error.assert_called_once()
+
+
 class TestSyncPermissions(unittest.TestCase):
 	@patch("enable_banking.tasks.enqueue_account_syncs")
 	@patch("enable_banking.tasks._require_manager")
@@ -259,3 +360,32 @@ class TestSyncPermissions(unittest.TestCase):
 
 		require_manager.assert_called_once_with()
 		connection.check_permission.assert_called_once_with("write")
+
+
+def _expiring_connection(**overrides):
+	values = {
+		"name": "CONNECTION-1",
+		"company": "Test Company",
+		"aspsp_name": "Test Bank",
+		"aspsp_country": "DE",
+		"valid_until": datetime(2026, 6, 25, 12, 0),
+		"expiry_notification_recipients": "manager@example.com\nops@example.com",
+		"expiry_notification_last_valid_until": None,
+	}
+	values.update(overrides)
+	return SimpleNamespace(**values)
+
+
+def _configure_expiry_notification_mocks(
+	frappe_mock,
+	*,
+	lead_days=7,
+	frequency="Daily",
+	connections=None,
+):
+	frappe_mock.get_single.return_value = SimpleNamespace(
+		expiry_notification_lead_days=lead_days,
+		expiry_notification_frequency=frequency,
+	)
+	frappe_mock.get_all.return_value = connections or []
+	frappe_mock.utils.escape_html.side_effect = lambda value: value
