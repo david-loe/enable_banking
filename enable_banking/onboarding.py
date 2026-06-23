@@ -124,7 +124,7 @@ def _start_authorization(
 				"automatic_sync": cint(automatic_sync),
 				"reauthorization_connection": reauthorization_connection,
 			}
-		).insert()
+		).insert(ignore_permissions=True)
 
 	payload = {
 		"access": {

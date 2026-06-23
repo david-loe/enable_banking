@@ -70,6 +70,7 @@ class TestAuthorizationStart(unittest.TestCase):
 			doc["state_hash"],
 			hashlib.sha256(b"raw-state").hexdigest(),
 		)
+		frappe_mock.get_doc.return_value.insert.assert_called_once_with(ignore_permissions=True)
 		self.assertEqual(doc["consent_days"], 10)
 		payload = client.start_authorization.call_args.args[0]
 		self.assertEqual(payload["state"], "raw-state")
