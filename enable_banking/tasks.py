@@ -9,12 +9,14 @@ from frappe.utils import get_datetime, now_datetime
 
 from enable_banking.client import EnableBankingClient
 from enable_banking.configuration import SETTINGS_DOCTYPE
+from enable_banking.integrity import internal_operation
 from enable_banking.onboarding import (
 	ACCOUNT_DOCTYPE,
 	AUTHORIZATION_DOCTYPE,
 	CONNECTION_DOCTYPE,
 	_provider_datetime,
 )
+from enable_banking.operations import log_operational_error
 from enable_banking.sync import (
 	AUTHORIZED_STATUS,
 	_safe_error,
@@ -27,11 +29,11 @@ SYNC_INTERVAL_HOURS = {
 	"Four Times a Day": 6,
 	"Once a Day": 24,
 }
-SYNC_LOCK_TIMEOUT = 30 * 60
+SYNC_JOB_TIMEOUT = 30 * 60
+SYNC_LOCK_TIMEOUT = 35 * 60
+STALE_SYNC_AFTER = timedelta(minutes=40)
 AUTHORIZATION_RETENTION_DAYS = 30
-INACTIVE_SESSION_STATUSES = frozenset(
-	{"CANCELLED", "CLOSED", "EXPIRED", "INVALID", "REVOKED"}
-)
+INACTIVE_SESSION_STATUSES = frozenset({"CANCELLED", "CLOSED", "EXPIRED", "INVALID", "REVOKED"})
 
 
 @frappe.whitelist()
@@ -59,6 +61,7 @@ def sync_account_now(integration_account: str) -> dict[str, Any]:
 
 
 def enqueue_scheduled_account_syncs() -> dict[str, Any]:
+	recover_stale_account_sync_states()
 	settings = frappe.get_single(SETTINGS_DOCTYPE)
 	if not settings.enabled or not settings.automatic_sync:
 		return {"queued": 0, "accounts": []}
@@ -122,7 +125,7 @@ def enqueue_account_job(integration_account: str, *, manual: bool) -> bool:
 	job = frappe.enqueue(
 		"enable_banking.tasks.run_account_sync",
 		queue="long",
-		timeout=SYNC_LOCK_TIMEOUT,
+		timeout=SYNC_JOB_TIMEOUT,
 		job_id=f"enable-banking-sync::{frappe.local.site}::{integration_account}",
 		deduplicate=True,
 		integration_account=integration_account,
@@ -132,8 +135,11 @@ def enqueue_account_job(integration_account: str, *, manual: bool) -> bool:
 		frappe.db.set_value(
 			ACCOUNT_DOCTYPE,
 			integration_account,
-			"sync_status",
-			"Queued",
+			{
+				"sync_status": "Queued",
+				"last_sync_attempt_at": now_datetime(),
+				"last_error": None,
+			},
 			update_modified=False,
 		)
 	return job is not None
@@ -151,6 +157,14 @@ def run_account_sync(integration_account: str, manual: bool = False) -> dict[str
 		account = frappe.get_doc(ACCOUNT_DOCTYPE, integration_account)
 		connection = frappe.get_doc(CONNECTION_DOCTYPE, account.connection)
 		_update_doc(
+			account,
+			{
+				"sync_status": "In Progress",
+				"last_sync_attempt_at": now_datetime(),
+				"last_error": None,
+			},
+		)
+		_update_doc(
 			connection,
 			{
 				"last_sync_attempt_at": now_datetime(),
@@ -164,11 +178,20 @@ def run_account_sync(integration_account: str, manual: bool = False) -> dict[str
 			or not account.automatic_sync
 			or not connection.automatic_sync
 		):
+			_update_doc(account, {"sync_status": "Disabled"})
 			return {"disabled": True, "successful": False}
 
 		client = EnableBankingClient()
 		session = verify_connection_session(connection, client=client)
 		if session.get("status") != AUTHORIZED_STATUS:
+			if session.get("status") not in INACTIVE_SESSION_STATUSES:
+				_update_doc(
+					account,
+					{
+						"sync_status": "Failed",
+						"last_error": _("The provider session is not authorized."),
+					},
+				)
 			return {"reauthorization_required": True, "successful": False}
 
 		try:
@@ -195,6 +218,14 @@ def run_account_sync(integration_account: str, manual: bool = False) -> dict[str
 			_update_doc(connection, values)
 			return result
 		except Exception as exc:
+			log_operational_error("account synchronization failed", exc)
+			_update_doc(
+				account,
+				{
+					"sync_status": "Failed",
+					"last_error": _safe_error(exc),
+				},
+			)
 			_update_doc(connection, {"last_error": _safe_error(exc)})
 			raise
 	finally:
@@ -235,6 +266,7 @@ def verify_connection_session(connection, *, client: EnableBankingClient | None 
 			)
 		return session
 	except Exception as exc:
+		log_operational_error("provider session health check failed", exc)
 		_update_doc(
 			connection,
 			{
@@ -243,6 +275,32 @@ def verify_connection_session(connection, *, client: EnableBankingClient | None 
 			},
 		)
 		raise
+
+
+def recover_stale_account_sync_states(*, now=None) -> int:
+	cutoff = get_datetime(now or now_datetime()) - STALE_SYNC_AFTER
+	rows = frappe.get_all(
+		ACCOUNT_DOCTYPE,
+		filters={"sync_status": ["in", ["Queued", "In Progress"]]},
+		or_filters=[
+			["last_sync_attempt_at", "<", cutoff],
+			["last_sync_attempt_at", "is", "not set"],
+		],
+		fields=["name", "sync_status"],
+	)
+	for row in rows:
+		frappe.db.set_value(
+			ACCOUNT_DOCTYPE,
+			row.name,
+			{
+				"sync_status": "Failed",
+				"last_error": _(
+					"The previous {0} synchronization did not complete and can be retried."
+				).format(row.sync_status.lower()),
+			},
+			update_modified=False,
+		)
+	return len(rows)
 
 
 def purge_consumed_authorizations() -> int:
@@ -262,7 +320,8 @@ def purge_consumed_authorizations() -> int:
 			{"authorization": None},
 			update_modified=False,
 		)
-		frappe.delete_doc(AUTHORIZATION_DOCTYPE, name, ignore_permissions=True)
+		with internal_operation():
+			frappe.delete_doc(AUTHORIZATION_DOCTYPE, name, ignore_permissions=True)
 	return len(names)
 
 
@@ -273,9 +332,7 @@ def _update_doc(doc, values: dict[str, Any]) -> None:
 
 
 def _format_counts(result: dict[str, Any]) -> str:
-	return _(
-		"Fetched {0}, created {1}, duplicates {2}, skipped {3}, failed {4}"
-	).format(
+	return _("Fetched {0}, created {1}, duplicates {2}, skipped {3}, failed {4}").format(
 		result.get("fetched", 0),
 		result.get("created", 0),
 		result.get("duplicate", 0),

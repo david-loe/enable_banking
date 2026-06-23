@@ -170,6 +170,36 @@ class TestEnableBankingClient(unittest.TestCase):
 		with self.assertRaisesRegex(EnableBankingRequestError, "repeated"):
 			self.client.get_account_transactions("account-id")
 
+	def test_transaction_page_limit_stops_pagination(self):
+		self.session.request.return_value = make_response(
+			200,
+			{"transactions": [], "continuation_key": "next"},
+		)
+
+		with self.assertRaisesRegex(EnableBankingRequestError, "page limit"):
+			self.client.get_account_transactions("account-id", max_pages=1)
+
+		self.assertEqual(self.session.request.call_count, 1)
+
+	def test_transaction_count_limit_rejects_oversized_response(self):
+		self.session.request.return_value = make_response(
+			200,
+			{"transactions": [{}, {}], "continuation_key": None},
+		)
+
+		with self.assertRaisesRegex(EnableBankingRequestError, "transaction limit"):
+			self.client.get_account_transactions("account-id", max_transactions=1)
+
+	def test_retry_after_is_clamped(self):
+		self.session.request.side_effect = [
+			make_response(429, {"code": "RATE_LIMIT"}, {"Retry-After": "3600"}),
+			make_response(200, {"active": True}),
+		]
+
+		self.client.get_application()
+
+		self.sleep.assert_called_once_with(60.0)
+
 	def test_api_error_exposes_only_status_and_error_code(self):
 		self.session.request.return_value = make_response(
 			400,

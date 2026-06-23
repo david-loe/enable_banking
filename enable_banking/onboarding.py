@@ -14,6 +14,13 @@ from frappe.utils import cint, convert_utc_to_system_timezone, get_datetime, get
 
 from enable_banking.client import EnableBankingClient, sanitize_for_log
 from enable_banking.configuration import SETTINGS_DOCTYPE
+from enable_banking.integrity import (
+	clear_bank_account_mapping,
+	internal_operation,
+	set_bank_account_mapping,
+	validate_bank_account_mapping,
+)
+from enable_banking.operations import log_operational_error
 
 AUTHORIZATION_DOCTYPE = "Enable Banking Authorization"
 CONNECTION_DOCTYPE = "Enable Banking Connection"
@@ -51,6 +58,28 @@ def start_authorization(
 	automatic_sync: int = 0,
 ) -> dict[str, Any]:
 	_require_manager()
+	return _start_authorization(
+		company=company,
+		parent_gl_account=parent_gl_account,
+		country=country,
+		aspsp_name=aspsp_name,
+		psu_type=psu_type,
+		consent_days=consent_days,
+		automatic_sync=automatic_sync,
+	)
+
+
+def _start_authorization(
+	*,
+	company: str,
+	parent_gl_account: str,
+	country: str,
+	aspsp_name: str,
+	psu_type: str,
+	consent_days: int,
+	automatic_sync: int = 0,
+	reauthorization_connection: str | None = None,
+) -> dict[str, Any]:
 	settings = frappe.get_single(SETTINGS_DOCTYPE)
 	if not cint(settings.enabled):
 		frappe.throw(_("Enable Banking is disabled."))
@@ -78,22 +107,24 @@ def start_authorization(
 	state = secrets.token_urlsafe(32)
 	state_hash = _state_hash(state)
 
-	authorization = frappe.get_doc(
-		{
-			"doctype": AUTHORIZATION_DOCTYPE,
-			"status": "Pending",
-			"initiating_user": frappe.session.user,
-			"expires_at": now_datetime() + AUTHORIZATION_TTL,
-			"state_hash": state_hash,
-			"company": company,
-			"parent_gl_account": parent_gl_account,
-			"aspsp_name": aspsp_name,
-			"aspsp_country": country,
-			"psu_type": psu_type,
-			"consent_days": max(1, math.ceil(validity_seconds / 86400)),
-			"automatic_sync": cint(automatic_sync),
-		}
-	).insert()
+	with internal_operation():
+		authorization = frappe.get_doc(
+			{
+				"doctype": AUTHORIZATION_DOCTYPE,
+				"status": "Pending",
+				"initiating_user": frappe.session.user,
+				"expires_at": now_datetime() + AUTHORIZATION_TTL,
+				"state_hash": state_hash,
+				"company": company,
+				"parent_gl_account": parent_gl_account,
+				"aspsp_name": aspsp_name,
+				"aspsp_country": country,
+				"psu_type": psu_type,
+				"consent_days": max(1, math.ceil(validity_seconds / 86400)),
+				"automatic_sync": cint(automatic_sync),
+				"reauthorization_connection": reauthorization_connection,
+			}
+		).insert()
 
 	payload = {
 		"access": {
@@ -139,7 +170,29 @@ def callback(
 	if not authorization:
 		return _redirect(SETTINGS_ROUTE)
 
+	if authorization.status == "Cleanup Required":
+		return _retry_callback_cleanup(authorization)
+
+	if (
+		authorization.status == "Session Created"
+		and getattr(authorization, "connection", None)
+		and getattr(authorization, "superseded_session_id", None)
+	):
+		connection = frappe.get_doc(CONNECTION_DOCTYPE, authorization.connection)
+		_close_superseded_session(
+			authorization,
+			connection,
+			authorization.superseded_session_id,
+			EnableBankingClient(),
+		)
+		return _redirect(_connection_route(connection.name))
+
 	if error:
+		if error != "access_denied":
+			log_operational_error(
+				"authorization callback rejected",
+				"Provider returned an authorization error.",
+			)
 		authorization.db_set(
 			{
 				"status": "Cancelled" if error == "access_denied" else "Failed",
@@ -150,7 +203,11 @@ def callback(
 		frappe.db.commit()
 		return _redirect(SETTINGS_ROUTE)
 
-	if not code:
+	if not code and not authorization.provider_session_id:
+		log_operational_error(
+			"authorization callback failed",
+			"Provider callback did not contain an authorization code.",
+		)
 		authorization.db_set(
 			{
 				"status": "Failed",
@@ -161,20 +218,11 @@ def callback(
 		frappe.db.commit()
 		return _redirect(SETTINGS_ROUTE)
 
+	client = EnableBankingClient()
 	try:
-		session = EnableBankingClient().authorize_session(code)
-		connection = _create_connection_and_accounts(authorization, session)
-		authorization.db_set(
-			{
-				"status": "Consumed",
-				"connection": connection.name,
-				"error_message": None,
-			},
-			update_modified=False,
-		)
-		frappe.db.commit()
-		return _redirect(_connection_route(connection.name))
+		session = _get_or_create_callback_session(authorization, code, client)
 	except Exception as exc:
+		log_operational_error("authorization callback failed", exc)
 		frappe.db.rollback()
 		frappe.db.set_value(
 			AUTHORIZATION_DOCTYPE,
@@ -188,14 +236,62 @@ def callback(
 		frappe.db.commit()
 		return _redirect(SETTINGS_ROUTE)
 
+	try:
+		connection, superseded_session_id = _create_connection_and_accounts(
+			authorization,
+			session,
+		)
+		authorization.db_set(
+			{
+				"status": "Session Created" if superseded_session_id else "Consumed",
+				"connection": connection.name,
+				"superseded_session_id": superseded_session_id,
+				"error_message": None,
+			},
+			update_modified=False,
+		)
+		frappe.db.commit()
+	except Exception as exc:
+		log_operational_error("authorization callback persistence failed", exc)
+		frappe.db.rollback()
+		cleanup_error = _close_failed_callback_session(
+			authorization,
+			session.get("session_id"),
+			client,
+		)
+		frappe.db.set_value(
+			AUTHORIZATION_DOCTYPE,
+			authorization.name,
+			{
+				"status": "Cleanup Required" if cleanup_error else "Failed",
+				"provider_session_id": session.get("session_id") if cleanup_error else None,
+				"error_message": _callback_persistence_error(
+					exc,
+					cleanup_error,
+					session.get("session_id"),
+				),
+			},
+			update_modified=False,
+		)
+		frappe.db.commit()
+		return _redirect(SETTINGS_ROUTE)
+
+	if superseded_session_id:
+		_close_superseded_session(
+			authorization,
+			connection,
+			superseded_session_id,
+			client,
+		)
+	return _redirect(_connection_route(connection.name))
+
 
 @frappe.whitelist()
 def map_existing_account(integration_account: str, bank_account: str) -> dict[str, str]:
 	_require_manager()
 	integration = frappe.get_doc(ACCOUNT_DOCTYPE, integration_account)
 	integration.check_permission("write")
-	_validate_bank_account_mapping(integration, bank_account)
-	_link_bank_account(integration, frappe.get_doc("Bank Account", bank_account))
+	set_bank_account_mapping(integration, frappe.get_doc("Bank Account", bank_account))
 	return {"bank_account": bank_account}
 
 
@@ -227,23 +323,32 @@ def create_erpnext_account(integration_account: str) -> dict[str, str]:
 
 	account_type = _ensure_bank_account_type(integration.cash_account_type)
 	identifier = _primary_account_identifier(_metadata(integration))
-	bank_account = frappe.get_doc(
-		{
-			"doctype": "Bank Account",
-			"account_name": account_name,
-			"bank": bank.name,
-			"account": gl_account.name,
-			"account_type": account_type,
-			"is_company_account": 1,
-			"company": connection.company,
-			"iban": identifier.get("iban"),
-			"bank_account_no": identifier.get("account_number"),
-			"mask": integration.masked_identifier,
-			"enable_banking_account": integration.name,
-		}
-	).insert()
-	integration.db_set("bank_account", bank_account.name)
+	with internal_operation():
+		bank_account = frappe.get_doc(
+			{
+				"doctype": "Bank Account",
+				"account_name": account_name,
+				"bank": bank.name,
+				"account": gl_account.name,
+				"account_type": account_type,
+				"is_company_account": 1,
+				"company": connection.company,
+				"iban": identifier.get("iban"),
+				"bank_account_no": identifier.get("account_number"),
+				"mask": integration.masked_identifier,
+			}
+		).insert()
+	set_bank_account_mapping(integration, bank_account)
 	return {"bank_account": bank_account.name, "gl_account": gl_account.name, "bank": bank.name}
+
+
+@frappe.whitelist()
+def unmap_account(integration_account: str) -> dict[str, str | None]:
+	_require_manager()
+	integration = frappe.get_doc(ACCOUNT_DOCTYPE, integration_account)
+	integration.check_permission("write")
+	clear_bank_account_mapping(integration)
+	return {"bank_account": None}
 
 
 @frappe.whitelist()
@@ -260,15 +365,15 @@ def reauthorize(connection: str) -> dict[str, Any]:
 	validity_days = cint(source.consent_days) if source else 0
 	if validity_days < 1:
 		validity_days = cint(frappe.db.get_single_value(SETTINGS_DOCTYPE, "default_consent_days")) or 90
-	return start_authorization(
+	return _start_authorization(
 		company=connection_doc.company,
-		parent_gl_account=connection_doc.parent_gl_account
-		or (source.parent_gl_account if source else None),
+		parent_gl_account=connection_doc.parent_gl_account or (source.parent_gl_account if source else None),
 		country=connection_doc.aspsp_country,
 		aspsp_name=connection_doc.aspsp_name,
 		psu_type=connection_doc.psu_type,
 		consent_days=validity_days,
 		automatic_sync=connection_doc.automatic_sync,
+		reauthorization_connection=connection_doc.name,
 	)
 
 
@@ -278,12 +383,21 @@ def close_connection(connection: str) -> dict[str, str]:
 	connection_doc = frappe.get_doc(CONNECTION_DOCTYPE, connection)
 	connection_doc.check_permission("write")
 	if connection_doc.authorization_status != "CLOSED":
-		EnableBankingClient().delete_session(connection_doc.provider_session_id)
+		try:
+			EnableBankingClient().delete_session(connection_doc.provider_session_id)
+		except Exception as exc:
+			log_operational_error("provider session closure failed", exc)
+			message = _(
+				"The provider session could not be closed. The connection remains active; retry after resolving the provider error. Details: {0}"
+			).format(_safe_session_error(exc, connection_doc.provider_session_id))
+			connection_doc.db_set("last_error", message, update_modified=False)
+			frappe.throw(message)
 		connection_doc.db_set(
 			{
 				"authorization_status": "CLOSED",
 				"closed_at": now_datetime(),
 				"automatic_sync": 0,
+				"last_error": None,
 			}
 		)
 		frappe.db.set_value(
@@ -293,6 +407,22 @@ def close_connection(connection: str) -> dict[str, str]:
 			update_modified=False,
 		)
 	return {"status": "CLOSED"}
+
+
+@frappe.whitelist()
+def delete_connection(connection: str) -> dict[str, str]:
+	_require_manager()
+	connection_doc = frappe.get_doc(CONNECTION_DOCTYPE, connection)
+	connection_doc.check_permission("write")
+	if connection_doc.authorization_status != "CLOSED":
+		frappe.throw(_("Close the provider session before deleting this connection."))
+	with internal_operation():
+		frappe.delete_doc(
+			CONNECTION_DOCTYPE,
+			connection_doc.name,
+			ignore_permissions=True,
+		)
+	return {"deleted": connection_doc.name}
 
 
 def get_callback_url() -> str:
@@ -318,6 +448,9 @@ def _consume_authorization(state: str | None):
 		return None
 
 	row = rows[0]
+	if row.status in {"Processing", "Session Created", "Cleanup Required"}:
+		frappe.db.commit()
+		return frappe.get_doc(AUTHORIZATION_DOCTYPE, row.name)
 	if row.status != "Pending":
 		frappe.db.rollback()
 		return None
@@ -334,7 +467,7 @@ def _consume_authorization(state: str | None):
 	frappe.db.set_value(
 		AUTHORIZATION_DOCTYPE,
 		row.name,
-		{"status": "Consumed", "consumed_at": now_datetime()},
+		{"status": "Processing", "consumed_at": now_datetime()},
 		update_modified=False,
 	)
 	frappe.db.commit()
@@ -348,30 +481,192 @@ def _create_connection_and_accounts(authorization, session):
 	access = session.get("access") or {}
 	aspsp = session.get("aspsp") or {}
 	now = now_datetime()
-	connection = frappe.get_doc(
-		{
-			"doctype": CONNECTION_DOCTYPE,
-			"authorization_status": "AUTHORIZED",
-			"company": authorization.company,
-			"parent_gl_account": authorization.parent_gl_account,
-			"automatic_sync": authorization.automatic_sync,
-			"aspsp_name": aspsp.get("name") or authorization.aspsp_name,
-			"aspsp_country": aspsp.get("country") or authorization.aspsp_country,
-			"psu_type": session.get("psu_type") or authorization.psu_type,
-			"provider_session_id": session_id,
-			"authorization": authorization.name,
-			"valid_from": now,
-			"valid_until": _provider_datetime(access.get("valid_until")),
-			"last_health_check_at": now,
-			"last_successful_health_check_at": now,
-			"last_authorized_at": now,
-		}
-	).insert(ignore_permissions=True)
+	values = {
+		"authorization_status": "AUTHORIZED",
+		"company": authorization.company,
+		"parent_gl_account": authorization.parent_gl_account,
+		"automatic_sync": authorization.automatic_sync,
+		"aspsp_name": aspsp.get("name") or authorization.aspsp_name,
+		"aspsp_country": aspsp.get("country") or authorization.aspsp_country,
+		"psu_type": session.get("psu_type") or authorization.psu_type,
+		"provider_session_id": session_id,
+		"authorization": authorization.name,
+		"valid_from": now,
+		"valid_until": _provider_datetime(access.get("valid_until")),
+		"last_health_check_at": now,
+		"last_successful_health_check_at": now,
+		"last_authorized_at": now,
+		"closed_at": None,
+		"last_error": None,
+	}
+	superseded_session_id = None
+	if authorization.reauthorization_connection:
+		connection = frappe.get_doc(
+			CONNECTION_DOCTYPE,
+			authorization.reauthorization_connection,
+		)
+		if connection.company != authorization.company:
+			frappe.throw(_("The connection being reauthorized belongs to another company."))
+		if (
+			connection.aspsp_name != authorization.aspsp_name
+			or connection.aspsp_country != authorization.aspsp_country
+			or connection.psu_type != authorization.psu_type
+		):
+			frappe.throw(_("The connection being reauthorized does not match this authorization."))
+		superseded_session_id = connection.provider_session_id
+		connection.update(values)
+		with internal_operation():
+			connection.save(ignore_permissions=True)
+	else:
+		with internal_operation():
+			connection = frappe.get_doc(
+				{
+					"doctype": CONNECTION_DOCTYPE,
+					**values,
+				}
+			).insert(ignore_permissions=True)
 
 	for account in session.get("accounts") or []:
 		_upsert_discovered_account(connection, account)
 	_refresh_connection_details_after_authorization(connection)
-	return connection
+	return connection, superseded_session_id
+
+
+def _get_or_create_callback_session(authorization, code, client: EnableBankingClient):
+	if authorization.provider_session_id:
+		session = client.get_session(authorization.provider_session_id)
+		session.setdefault("session_id", authorization.provider_session_id)
+		return session
+
+	session = client.authorize_session(code)
+	session_id = session.get("session_id")
+	if not session_id:
+		frappe.throw(_("Enable Banking did not return a session ID."))
+	authorization.db_set(
+		{
+			"status": "Session Created",
+			"provider_session_id": session_id,
+			"error_message": None,
+		},
+		update_modified=False,
+	)
+	frappe.db.commit()
+	authorization.status = "Session Created"
+	authorization.provider_session_id = session_id
+	return session
+
+
+def _close_failed_callback_session(
+	authorization,
+	session_id: str | None,
+	client: EnableBankingClient,
+) -> str | None:
+	if not session_id:
+		return None
+	try:
+		client.delete_session(session_id)
+		return None
+	except Exception as exc:
+		log_operational_error("provider session cleanup failed", exc)
+		authorization.provider_session_id = session_id
+		return _safe_session_error(exc, session_id)
+
+
+def _close_superseded_session(
+	authorization,
+	connection,
+	session_id: str,
+	client: EnableBankingClient,
+) -> None:
+	try:
+		client.delete_session(session_id)
+	except Exception as exc:
+		log_operational_error("superseded session cleanup failed", exc)
+		message = _(
+			"The new authorization is active, but the previous provider session could not be closed. Reload this callback URL to retry cleanup. Details: {0}"
+		).format(_safe_session_error(exc, session_id))
+		authorization.db_set(
+			{
+				"status": "Cleanup Required",
+				"error_message": message,
+			},
+			update_modified=False,
+		)
+		connection.db_set("last_error", message, update_modified=False)
+		frappe.db.commit()
+		return
+
+	authorization.db_set(
+		{
+			"status": "Consumed",
+			"superseded_session_id": None,
+			"error_message": None,
+		},
+		update_modified=False,
+	)
+	connection.db_set("last_error", None, update_modified=False)
+	frappe.db.commit()
+
+
+def _retry_callback_cleanup(authorization):
+	client = EnableBankingClient()
+	session_id = authorization.superseded_session_id or authorization.provider_session_id
+	if not session_id:
+		authorization.db_set(
+			{
+				"status": "Failed",
+				"error_message": _("Provider cleanup was required, but no session was recorded."),
+			},
+			update_modified=False,
+		)
+		frappe.db.commit()
+		return _redirect(SETTINGS_ROUTE)
+
+	try:
+		client.delete_session(session_id)
+	except Exception as exc:
+		log_operational_error("provider session cleanup retry failed", exc)
+		authorization.db_set(
+			"error_message",
+			_(
+				"The provider session still could not be closed. Retry cleanup after resolving the provider error. Details: {0}"
+			).format(_safe_session_error(exc, session_id)),
+			update_modified=False,
+		)
+		frappe.db.commit()
+		return _redirect(
+			_connection_route(authorization.connection) if authorization.connection else SETTINGS_ROUTE
+		)
+
+	if authorization.connection and authorization.superseded_session_id:
+		authorization.db_set(
+			{
+				"status": "Consumed",
+				"superseded_session_id": None,
+				"error_message": None,
+			},
+			update_modified=False,
+		)
+		frappe.db.set_value(
+			CONNECTION_DOCTYPE,
+			authorization.connection,
+			"last_error",
+			None,
+			update_modified=False,
+		)
+		route = _connection_route(authorization.connection)
+	else:
+		authorization.db_set(
+			{
+				"status": "Failed",
+				"provider_session_id": None,
+				"error_message": _("Local setup failed; the provider session was closed."),
+			},
+			update_modified=False,
+		)
+		route = SETTINGS_ROUTE
+	frappe.db.commit()
+	return _redirect(route)
 
 
 def _refresh_connection_details_after_authorization(connection) -> None:
@@ -380,6 +675,7 @@ def _refresh_connection_details_after_authorization(connection) -> None:
 
 		refresh_connection(connection, fetch_balances=False, raise_on_error=False)
 	except Exception as exc:
+		log_operational_error("post-authorization account refresh failed", exc)
 		connection.db_set("last_error", _safe_error(exc), update_modified=False)
 
 
@@ -410,7 +706,11 @@ def _upsert_discovered_account(connection, account):
 		"usage": account.get("usage"),
 		"cash_account_type": account.get("cash_account_type"),
 		"psu_status": account.get("psu_status"),
-		"account_metadata_json": json.dumps(account, sort_keys=True, default=str),
+		"account_metadata_json": json.dumps(
+			minimal_account_metadata(account),
+			sort_keys=True,
+			default=str,
+		),
 		"sync_status": "Never Synced",
 		"last_error": None,
 	}
@@ -424,44 +724,25 @@ def _upsert_discovered_account(connection, account):
 		existing = frappe.get_doc(ACCOUNT_DOCTYPE, existing_name)
 		if existing.company != connection.company:
 			frappe.throw(_("A discovered account is already linked to another company."))
+		if existing.connection != connection.name:
+			frappe.throw(_("A discovered account is already linked to another connection."))
 		existing.update(values)
-		existing.save(ignore_permissions=True)
+		with internal_operation():
+			existing.save(ignore_permissions=True)
 		return existing
-	return frappe.get_doc({"doctype": ACCOUNT_DOCTYPE, **values}).insert(ignore_permissions=True)
+	with internal_operation():
+		return frappe.get_doc({"doctype": ACCOUNT_DOCTYPE, **values}).insert(ignore_permissions=True)
 
 
 def _validate_bank_account_mapping(integration, bank_account_name):
 	if integration.bank_account and integration.bank_account != bank_account_name:
 		frappe.throw(_("This Enable Banking account is already mapped."))
 	bank_account = frappe.get_doc("Bank Account", bank_account_name)
-	if not bank_account.is_company_account or bank_account.company != integration.company:
-		frappe.throw(_("The Bank Account must be a company account for {0}.").format(integration.company))
-	if bank_account.disabled:
-		frappe.throw(_("The Bank Account is disabled."))
-	if bank_account.integration_id:
-		frappe.throw(_("The Bank Account is already linked to another banking integration."))
-	account_currency = frappe.get_cached_value("Account", bank_account.account, "account_currency")
-	if account_currency != integration.currency:
-		frappe.throw(
-			_("The Bank Account currency {0} does not match the provider currency {1}.").format(
-				account_currency,
-				integration.currency,
-			)
-		)
-	linked_integration = bank_account.get("enable_banking_account")
-	if linked_integration and linked_integration != integration.name:
-		frappe.throw(_("The Bank Account is linked to another Enable Banking account."))
-	other = frappe.db.get_value(
-		ACCOUNT_DOCTYPE,
-		{"bank_account": bank_account.name, "name": ["!=", integration.name]},
-	)
-	if other:
-		frappe.throw(_("The Bank Account is linked to another Enable Banking account."))
+	validate_bank_account_mapping(integration, bank_account)
 
 
 def _link_bank_account(integration, bank_account):
-	bank_account.db_set("enable_banking_account", integration.name)
-	integration.db_set("bank_account", bank_account.name)
+	set_bank_account_mapping(integration, bank_account)
 
 
 def _validate_parent_account(parent_account: str, company: str):
@@ -473,7 +754,12 @@ def _validate_parent_account(parent_account: str, company: str):
 	)
 	if not account:
 		frappe.throw(_("Parent GL Account does not exist."))
-	if account.company != company or not account.is_group or account.account_type != "Bank" or account.disabled:
+	if (
+		account.company != company
+		or not account.is_group
+		or account.account_type != "Bank"
+		or account.disabled
+	):
 		frappe.throw(
 			_("Parent GL Account must be an enabled Bank-type group account belonging to {0}.").format(
 				company
@@ -486,9 +772,7 @@ def _find_aspsp(country: str, name: str, psu_type: str):
 	for aspsp in response.get("aspsps") or []:
 		if aspsp.get("name") == name and aspsp.get("country") == country:
 			supported_types = {
-				method.get("psu_type")
-				for method in aspsp.get("auth_methods") or []
-				if method.get("psu_type")
+				method.get("psu_type") for method in aspsp.get("auth_methods") or [] if method.get("psu_type")
 			}
 			if supported_types and psu_type not in supported_types:
 				frappe.throw(_("The selected ASPSP does not support the requested PSU type."))
@@ -503,11 +787,7 @@ def _public_aspsp(aspsp):
 		"logo": aspsp.get("logo"),
 		"maximum_consent_validity": cint(aspsp.get("maximum_consent_validity")),
 		"psu_types": sorted(
-			{
-				method.get("psu_type")
-				for method in aspsp.get("auth_methods") or []
-				if method.get("psu_type")
-			}
+			{method.get("psu_type") for method in aspsp.get("auth_methods") or [] if method.get("psu_type")}
 		),
 	}
 
@@ -535,9 +815,8 @@ def _get_or_create_bank(country: str, aspsp_name: str):
 def _available_account_name(integration, bank_name: str, company: str) -> str:
 	from erpnext.accounts.utils import get_autoname_with_number
 
-	base = (
-		str(integration.account_description or integration.account_name or _("Bank Account")).strip()
-		or _("Bank Account")
+	base = str(integration.account_description or integration.account_name or _("Bank Account")).strip() or _(
+		"Bank Account"
 	)
 	if integration.masked_identifier:
 		base = f"{base} {integration.masked_identifier}"
@@ -576,6 +855,45 @@ def _primary_account_identifier(metadata: dict[str, Any]) -> dict[str, str | Non
 	return {"iban": None, "account_number": None}
 
 
+def minimal_account_metadata(account: dict[str, Any]) -> dict[str, Any]:
+	"""Retain only identifiers needed to create or display an ERPNext Bank Account."""
+	if not isinstance(account, dict):
+		return {}
+
+	metadata: dict[str, Any] = {}
+	account_id = _minimal_account_identifier(account.get("account_id"))
+	if account_id:
+		metadata["account_id"] = account_id
+
+	all_account_ids = [
+		identifier
+		for item in account.get("all_account_ids") or []
+		if (identifier := _minimal_account_identifier(item, include_scheme=True))
+	]
+	if all_account_ids:
+		metadata["all_account_ids"] = all_account_ids
+	return metadata
+
+
+def _minimal_account_identifier(
+	identifier: Any,
+	*,
+	include_scheme: bool = False,
+) -> dict[str, Any]:
+	if not isinstance(identifier, dict):
+		return {}
+	result = {}
+	for fieldname in ("iban", "identification"):
+		if value := identifier.get(fieldname):
+			result[fieldname] = str(value)
+	other = identifier.get("other")
+	if isinstance(other, dict) and other.get("identification"):
+		result["other"] = {"identification": str(other["identification"])}
+	if include_scheme and identifier.get("scheme_name"):
+		result["scheme_name"] = str(identifier["scheme_name"])
+	return result
+
+
 def _masked_identifier(account: dict[str, Any]) -> str | None:
 	identifier = _primary_account_identifier(account)
 	value = identifier.get("iban") or identifier.get("account_number")
@@ -588,7 +906,7 @@ def _masked_identifier(account: dict[str, Any]) -> str | None:
 def _metadata(integration) -> dict[str, Any]:
 	try:
 		return json.loads(integration.account_metadata_json or "{}")
-	except (TypeError, ValueError):
+	except TypeError, ValueError:
 		return {}
 
 
@@ -628,6 +946,27 @@ def _safe_callback_error(error: str, description: str | None) -> str:
 
 def _safe_error(exc: Exception) -> str:
 	return str(sanitize_for_log(str(exc)))[:500]
+
+
+def _callback_persistence_error(
+	exc: Exception,
+	cleanup_error: str | None,
+	session_id: str | None,
+) -> str:
+	message = _("Local connection setup failed: {0}").format(_safe_session_error(exc, session_id))
+	if cleanup_error:
+		message += _(
+			" The new provider session could not be closed; reload the callback URL to retry cleanup. Details: {0}"
+		).format(cleanup_error)
+	return message[:500]
+
+
+def _safe_session_error(exc: Exception, *session_ids: str | None) -> str:
+	message = _safe_error(exc)
+	for session_id in session_ids:
+		if session_id:
+			message = message.replace(str(session_id), "[REDACTED]")
+	return message
 
 
 def _utc_now() -> datetime:

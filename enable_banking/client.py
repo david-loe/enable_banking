@@ -24,6 +24,9 @@ JWT_AUDIENCE = "api.enablebanking.com"
 JWT_TTL = timedelta(minutes=5)
 DEFAULT_TIMEOUT = (10, 60)
 DEFAULT_MAX_GET_ATTEMPTS = 3
+DEFAULT_MAX_TRANSACTION_PAGES = 20
+DEFAULT_MAX_TRANSACTIONS = 5000
+MAX_RETRY_DELAY_SECONDS = 60.0
 RETRYABLE_STATUS_CODES = frozenset({408, 429, 500, 502, 503, 504})
 SENSITIVE_KEYS = frozenset(
 	{
@@ -161,7 +164,11 @@ class EnableBankingClient:
 		transaction_status: str | None = None,
 		strategy: str | None = None,
 		psu_headers: Mapping[str, str] | None = None,
+		max_pages: int = DEFAULT_MAX_TRANSACTION_PAGES,
+		max_transactions: int = DEFAULT_MAX_TRANSACTIONS,
 	) -> dict[str, Any]:
+		if max_pages < 1 or max_transactions < 1:
+			raise ValueError("Transaction pagination limits must be positive.")
 		path = f"/accounts/{_path_segment(account_id)}/transactions"
 		params = {
 			"date_from": _date_string(date_from),
@@ -171,13 +178,26 @@ class EnableBankingClient:
 		}
 		transactions: list[dict[str, Any]] = []
 		seen_continuation_keys: set[str] = set()
+		page_count = 0
 
 		while True:
+			page_count += 1
 			page = self._request("GET", path, params=params, headers=psu_headers)
-			transactions.extend(page.get("transactions") or [])
+			page_transactions = page.get("transactions") or []
+			if not isinstance(page_transactions, list):
+				raise EnableBankingRequestError("Enable Banking returned an invalid transaction page.")
+			if len(transactions) + len(page_transactions) > max_transactions:
+				raise EnableBankingRequestError(
+					"Enable Banking transaction import exceeded the configured transaction limit."
+				)
+			transactions.extend(page_transactions)
 			continuation_key = page.get("continuation_key")
 			if not continuation_key:
 				break
+			if page_count >= max_pages:
+				raise EnableBankingRequestError(
+					"Enable Banking transaction import exceeded the configured page limit."
+				)
 			if continuation_key in seen_continuation_keys:
 				raise EnableBankingRequestError(
 					"Enable Banking returned a repeated transaction continuation key."
@@ -335,6 +355,7 @@ def sanitize_for_log(value: Any) -> Any:
 
 	sanitized = PEM_PATTERN.sub("[REDACTED PRIVATE KEY]", value)
 	sanitized = JWT_PATTERN.sub("[REDACTED JWT]", sanitized)
+	sanitized = RESOURCE_PATH_PATTERN.sub(r"/\1/[REDACTED]", sanitized)
 	return sanitized
 
 
@@ -367,20 +388,23 @@ def _redact_endpoint(path: str) -> str:
 
 
 def _backoff_seconds(attempt: int) -> float:
-	return min(0.5 * (2 ** (attempt - 1)), 8.0)
+	return min(0.5 * (2 ** (attempt - 1)), 8.0, MAX_RETRY_DELAY_SECONDS)
 
 
 def _retry_delay(response: requests.Response, attempt: int, *, now: datetime) -> float:
 	retry_after = response.headers.get("Retry-After")
 	if retry_after:
 		try:
-			return max(0.0, float(retry_after))
+			return min(max(0.0, float(retry_after)), MAX_RETRY_DELAY_SECONDS)
 		except ValueError:
 			try:
 				retry_at = parsedate_to_datetime(retry_after)
 				if retry_at.tzinfo is None:
 					retry_at = retry_at.replace(tzinfo=UTC)
-				return max(0.0, (retry_at - now.astimezone(UTC)).total_seconds())
-			except (TypeError, ValueError, OverflowError):
+				return min(
+					max(0.0, (retry_at - now.astimezone(UTC)).total_seconds()),
+					MAX_RETRY_DELAY_SECONDS,
+				)
+			except TypeError, ValueError, OverflowError:
 				pass
 	return _backoff_seconds(attempt)

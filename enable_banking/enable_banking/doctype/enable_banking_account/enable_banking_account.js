@@ -24,6 +24,20 @@ frappe.ui.form.on("Enable Banking Account", {
 					})
 					.then(() => frm.reload_doc());
 			});
+			frm.add_custom_button(__("Unmap Bank Account"), () => {
+				frappe.confirm(
+					__("Remove this mapping and clear Enable Banking balances from the Bank Account?"),
+					() => {
+						frappe
+							.call({
+								method: "enable_banking.onboarding.unmap_account",
+								args: { integration_account: frm.doc.name },
+								freeze: true,
+							})
+							.then(() => frm.reload_doc());
+					},
+				);
+			});
 		}
 
 		if (frm.doc.bank_account) return;

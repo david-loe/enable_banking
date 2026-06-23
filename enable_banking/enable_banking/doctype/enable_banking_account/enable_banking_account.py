@@ -1,9 +1,78 @@
+import re
+
 import frappe
+from frappe import _
 from frappe.model.document import Document
+
+from enable_banking.integrity import (
+	require_internal_operation,
+	validate_bank_account_mapping,
+	validate_immutable_fields,
+	validate_reciprocal_mapping,
+)
+
+IMMUTABLE_FIELDS = {
+	"connection",
+	"company",
+	"resource_uid",
+	"identification_hash",
+	"identification_hashes_json",
+	"bank_account",
+	"masked_identifier",
+	"account_name",
+	"account_description",
+	"product",
+	"currency",
+	"usage",
+	"cash_account_type",
+	"psu_status",
+	"account_metadata_json",
+	"booked_balance",
+	"available_balance",
+	"balance_currency",
+	"balance_as_of",
+	"latest_balances_json",
+	"sync_status",
+	"last_sync_attempt_at",
+	"last_sync_success_at",
+	"last_successful_end_date",
+	"last_fetched_count",
+	"last_created_count",
+	"last_duplicate_count",
+	"last_skipped_count",
+	"last_failed_count",
+	"last_error",
+}
+SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 
 
 class EnableBankingAccount(Document):
+	def before_insert(self):
+		require_internal_operation(_("created"))
+
+	def validate(self):
+		validate_immutable_fields(self, IMMUTABLE_FIELDS)
+		connection = frappe.db.get_value(
+			"Enable Banking Connection",
+			self.connection,
+			["company", "authorization_status"],
+			as_dict=True,
+		)
+		if not connection:
+			frappe.throw(_("Enable Banking Connection does not exist."))
+		if connection.company != self.company:
+			frappe.throw(_("Enable Banking Account company must match its connection."))
+		if not self.resource_uid or not self.identification_hash:
+			frappe.throw(_("Provider resource UID and identification hash are required."))
+		if not SHA256_PATTERN.fullmatch(self.identification_hash or ""):
+			frappe.throw(_("Identification Hash must be a SHA-256 hexadecimal digest."))
+		if self.bank_account:
+			bank_account = frappe.get_doc("Bank Account", self.bank_account)
+			validate_bank_account_mapping(self, bank_account)
+			validate_reciprocal_mapping(self, bank_account)
+
 	def on_trash(self):
+		require_internal_operation(_("deleted"))
 		self._unlink_bank_accounts()
 		self._unlink_bank_transactions()
 

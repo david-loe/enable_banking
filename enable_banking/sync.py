@@ -10,14 +10,20 @@ import frappe
 from frappe import _
 from frappe.utils import cint, convert_utc_to_system_timezone, get_datetime, getdate, now_datetime, nowdate
 
-from enable_banking.client import EnableBankingClient, sanitize_for_log
+from enable_banking.client import EnableBankingClient
 from enable_banking.configuration import SETTINGS_DOCTYPE
+from enable_banking.integrity import (
+	validate_bank_account_mapping,
+	validate_reciprocal_mapping,
+)
 from enable_banking.onboarding import (
 	ACCOUNT_DOCTYPE,
 	CONNECTION_DOCTYPE,
 	_account_identity_hash,
 	_masked_identifier,
+	minimal_account_metadata,
 )
+from enable_banking.operations import log_operational_error, sanitized_error
 
 AVAILABLE_BALANCE_PRECEDENCE = ("ITAV", "CLAV", "FWAV")
 BOOKED_BALANCE_PRECEDENCE = ("ITBD", "CLBD")
@@ -27,6 +33,8 @@ CREDIT_INDICATOR = "CRDT"
 DEBIT_INDICATOR = "DBIT"
 DEFAULT_INITIAL_IMPORT_DAYS = 90
 DEFAULT_OVERLAP_DAYS = 7
+DEFAULT_MAX_TRANSACTION_PAGES = 20
+DEFAULT_MAX_TRANSACTIONS_PER_SYNC = 5000
 
 
 @frappe.whitelist()
@@ -81,6 +89,22 @@ def synchronize_account_transactions(
 			account.resource_uid,
 			date_from=date_from,
 			date_to=date_to,
+			max_pages=max(
+				1,
+				cint(getattr(settings, "max_transaction_pages", DEFAULT_MAX_TRANSACTION_PAGES))
+				or DEFAULT_MAX_TRANSACTION_PAGES,
+			),
+			max_transactions=max(
+				1,
+				cint(
+					getattr(
+						settings,
+						"max_transactions_per_sync",
+						DEFAULT_MAX_TRANSACTIONS_PER_SYNC,
+					)
+				)
+				or DEFAULT_MAX_TRANSACTIONS_PER_SYNC,
+			),
 		)
 		transactions = response.get("transactions") if isinstance(response, dict) else None
 		if not isinstance(transactions, list):
@@ -207,12 +231,10 @@ def normalize_transaction(transaction: dict[str, Any], account_identification_ha
 		transaction_code.get("description"),
 		counterparty.get("name"),
 	]
-	description = "\n".join(
-		dict.fromkeys(part for part in description_parts if _clean_text(part))
-	)
-	transaction_type = (
-		transaction_code.get("description") or transaction_code.get("display_code") or ""
-	)[:50]
+	description = "\n".join(dict.fromkeys(part for part in description_parts if _clean_text(part)))
+	transaction_type = (transaction_code.get("description") or transaction_code.get("display_code") or "")[
+		:50
+	]
 
 	values = {
 		"date": transaction_date,
@@ -358,6 +380,7 @@ def refresh_account(
 					"last_error": _safe_error(exc),
 				},
 			)
+		log_operational_error("account refresh failed", exc)
 		if raise_on_error:
 			raise
 		return {"refreshed": False, "failed": True, "error": _safe_error(exc)}
@@ -378,14 +401,12 @@ def normalize_balances(response: dict[str, Any] | list[dict[str, Any]]) -> list[
 		as_of = _balance_as_of(balance)
 		normalized.append(
 			{
-				"name": balance.get("name"),
 				"balance_type": balance.get("balance_type"),
 				"amount": str(amount_value) if amount_value is not None else None,
 				"currency": amount.get("currency"),
 				"last_change_date_time": balance.get("last_change_date_time"),
 				"reference_date": balance.get("reference_date"),
 				"as_of": as_of.isoformat(sep=" ") if as_of else None,
-				"last_committed_transaction": balance.get("last_committed_transaction"),
 			}
 		)
 	return normalized
@@ -450,7 +471,11 @@ def _update_account_details(account, details: dict[str, Any]) -> None:
 		"usage": details.get("usage"),
 		"cash_account_type": details.get("cash_account_type"),
 		"psu_status": details.get("psu_status"),
-		"account_metadata_json": json.dumps(details, sort_keys=True, default=str),
+		"account_metadata_json": json.dumps(
+			minimal_account_metadata(details),
+			sort_keys=True,
+			default=str,
+		),
 	}
 
 	provider_identification_hash = details.get("identification_hash")
@@ -473,14 +498,19 @@ def _update_account_balance_fields(
 	if selected_balances_match_currency(snapshot, account.currency):
 		values.update(
 			{
+				"booked_balance": snapshot.get("booked_amount"),
+				"available_balance": snapshot.get("available_amount"),
 				"balance_currency": snapshot.get("currency"),
 				"balance_as_of": snapshot.get("as_of"),
 			}
 		)
-		if snapshot.get("booked") is not None:
-			values["booked_balance"] = snapshot.get("booked_amount")
-		if snapshot.get("available") is not None:
-			values["available_balance"] = snapshot.get("available_amount")
+	else:
+		if snapshot.get("booked") is None:
+			values["booked_balance"] = None
+		if snapshot.get("available") is None:
+			values["available_balance"] = None
+		if snapshot.get("booked") is None and snapshot.get("available") is None:
+			values.update({"balance_currency": None, "balance_as_of": None})
 	_update_doc(account, values)
 
 
@@ -489,28 +519,41 @@ def _update_mapped_bank_account_balance_fields(account, connection, snapshot: di
 		return
 
 	bank_account = frappe.get_doc("Bank Account", account.bank_account)
-	if bank_account.company != connection.company:
-		frappe.throw(_("Mapped Bank Account company does not match the Enable Banking connection."))
+	_validate_mapped_bank_account(account, connection, bank_account)
 	gl_currency = frappe.get_cached_value("Account", bank_account.account, "account_currency")
-	if not selected_balances_match_currency(snapshot, gl_currency):
-		return
 
-	values = {
-		"enable_banking_balance_currency": snapshot.get("currency"),
-		"enable_banking_balance_as_of": snapshot.get("as_of"),
-		"enable_banking_last_sync_at": now_datetime(),
-	}
-	if snapshot.get("booked") is not None:
-		values["enable_banking_booked_balance"] = snapshot.get("booked_amount")
-	if snapshot.get("available") is not None:
-		values["enable_banking_available_balance"] = snapshot.get("available_amount")
+	values: dict[str, Any] = {}
+	if selected_balances_match_currency(snapshot, gl_currency):
+		values.update(
+			{
+				"enable_banking_booked_balance": snapshot.get("booked_amount"),
+				"enable_banking_available_balance": snapshot.get("available_amount"),
+				"enable_banking_balance_currency": snapshot.get("currency"),
+				"enable_banking_balance_as_of": snapshot.get("as_of"),
+				"enable_banking_last_sync_at": now_datetime(),
+			}
+		)
+	else:
+		if snapshot.get("booked") is None:
+			values["enable_banking_booked_balance"] = None
+		if snapshot.get("available") is None:
+			values["enable_banking_available_balance"] = None
+		if snapshot.get("booked") is None and snapshot.get("available") is None:
+			values.update(
+				{
+					"enable_banking_balance_currency": None,
+					"enable_banking_balance_as_of": None,
+					"enable_banking_last_sync_at": now_datetime(),
+				}
+			)
 
-	frappe.db.set_value(
-		"Bank Account",
-		bank_account.name,
-		values,
-		update_modified=False,
-	)
+	if values:
+		frappe.db.set_value(
+			"Bank Account",
+			bank_account.name,
+			values,
+			update_modified=False,
+		)
 
 
 def _is_balance_refresh_allowed(connection) -> bool:
@@ -566,7 +609,7 @@ def _provider_datetime(value: Any) -> datetime | None:
 				parsed = datetime.combine(date.fromisoformat(value), time.min)
 			else:
 				parsed = get_datetime(value)
-		except (TypeError, ValueError):
+		except TypeError, ValueError:
 			return None
 	if parsed.tzinfo is not None:
 		parsed = convert_utc_to_system_timezone(parsed.astimezone(UTC))
@@ -580,7 +623,7 @@ def _parse_normalized_as_of(value: Any) -> datetime | None:
 		return value
 	try:
 		return get_datetime(value)
-	except (TypeError, ValueError):
+	except TypeError, ValueError:
 		return None
 
 
@@ -589,7 +632,7 @@ def _decimal_or_none(value: Any) -> Decimal | None:
 		return None
 	try:
 		return Decimal(str(value))
-	except (InvalidOperation, ValueError):
+	except InvalidOperation, ValueError:
 		return None
 
 
@@ -599,11 +642,19 @@ def _validate_transaction_sync_account(account, connection) -> None:
 	if not account.bank_account:
 		raise ValueError(_("Map the Enable Banking account before importing transactions."))
 	bank_account = frappe.get_doc("Bank Account", account.bank_account)
-	if bank_account.company != connection.company:
-		raise ValueError(_("Mapped Bank Account company does not match the connection."))
-	gl_currency = frappe.get_cached_value("Account", bank_account.account, "account_currency")
-	if gl_currency != account.currency:
-		raise ValueError(_("Mapped Bank Account currency does not match the provider account."))
+	try:
+		_validate_mapped_bank_account(account, connection, bank_account)
+	except frappe.ValidationError as exc:
+		raise ValueError(str(exc)) from exc
+
+
+def _validate_mapped_bank_account(account, connection, bank_account) -> None:
+	if account.connection != connection.name:
+		frappe.throw(_("The Enable Banking account does not belong to this connection."))
+	if account.company != connection.company:
+		frappe.throw(_("The Enable Banking account company does not match the connection."))
+	validate_bank_account_mapping(account, bank_account)
+	validate_reciprocal_mapping(account, bank_account)
 
 
 def _insert_bank_transaction(account, values: dict[str, Any], *, index: int) -> str:
@@ -641,6 +692,7 @@ def _insert_bank_transaction(account, values: dict[str, Any], *, index: int) -> 
 
 
 def _record_transaction_sync_failure(account, counts: dict[str, int], exc: Exception) -> None:
+	log_operational_error("transaction import failed", exc)
 	_update_doc(
 		account,
 		{
@@ -666,7 +718,7 @@ def _transaction_date(transaction: dict[str, Any]) -> date:
 			continue
 		try:
 			return getdate(value)
-		except (TypeError, ValueError):
+		except TypeError, ValueError:
 			continue
 	raise ValueError(_("Transaction has no valid booking, value, or transaction date."))
 
@@ -753,7 +805,7 @@ def _sha256_json(value: Any) -> str:
 def _existing_identification_hashes(account) -> list[str]:
 	try:
 		values = json.loads(account.identification_hashes_json or "[]")
-	except (TypeError, ValueError):
+	except TypeError, ValueError:
 		values = []
 	return values if isinstance(values, list) else []
 
@@ -765,7 +817,7 @@ def _update_doc(doc, values: dict[str, Any]) -> None:
 
 
 def _safe_error(exc: Exception) -> str:
-	return str(sanitize_for_log(str(exc)))[:500]
+	return sanitized_error(exc)
 
 
 def _require_manager() -> None:

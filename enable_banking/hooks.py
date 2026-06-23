@@ -138,13 +138,12 @@ after_migrate = "enable_banking.setup.after_migrate"
 # ---------------
 # Hook on document methods and events
 
-# doc_events = {
-# 	"*": {
-# 		"on_update": "method",
-# 		"on_cancel": "method",
-# 		"on_trash": "method"
-# 	}
-# }
+doc_events = {
+	"Bank Account": {
+		"validate": "enable_banking.bank_account.validate_enable_banking_link",
+		"on_trash": "enable_banking.bank_account.prevent_linked_bank_account_deletion",
+	}
+}
 
 # Scheduled Tasks
 # ---------------

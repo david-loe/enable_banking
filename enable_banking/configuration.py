@@ -10,9 +10,8 @@ from cryptography.hazmat.primitives.serialization import load_pem_private_key
 from enable_banking.exceptions import EnableBankingConfigurationError
 
 DEFAULT_API_URL = "https://api.enablebanking.com"
+API_URL_SITE_CONFIG_KEY = "enable_banking_api_url"
 SETTINGS_DOCTYPE = "Enable Banking Settings"
-KEY_SOURCE_PASTED = "Pasted Key"
-KEY_SOURCE_UPLOAD = "Uploaded Private File"
 MAX_PRIVATE_KEY_BYTES = 64 * 1024
 
 
@@ -34,7 +33,7 @@ class EnableBankingConfig:
 		return cls(
 			app_id=_required_settings_value(settings, "app_id"),
 			redirect_url=_required_settings_value(settings, "redirect_url"),
-			api_url=(_settings_value(settings, "api_url") or DEFAULT_API_URL).rstrip("/"),
+			api_url=_configured_api_url(),
 			private_key_content=_get_private_key(settings),
 		).validate()
 
@@ -79,29 +78,6 @@ def validate_private_key(private_key: str | bytes) -> str:
 	return private_key
 
 
-def get_uploaded_private_key(file_url: str) -> str:
-	file_doc = frappe.get_doc(
-		"File",
-		{
-			"file_url": file_url,
-			"attached_to_doctype": SETTINGS_DOCTYPE,
-			"attached_to_name": SETTINGS_DOCTYPE,
-			"attached_to_field": "private_key_file",
-		},
-	)
-	if not file_doc.is_private:
-		raise EnableBankingConfigurationError(
-			"Enable Banking private key attachments must be uploaded as private files."
-		)
-	if not file_doc.file_url.startswith("/private/files/"):
-		raise EnableBankingConfigurationError(
-			"Enable Banking private key attachments must be stored on the ERPNext site."
-		)
-	if file_doc.file_size and file_doc.file_size > MAX_PRIVATE_KEY_BYTES:
-		raise EnableBankingConfigurationError("Enable Banking private key exceeds 64 KiB.")
-	return validate_private_key(file_doc.get_content())
-
-
 def _get_settings():
 	if not getattr(frappe, "db", None) or not frappe.db.exists("DocType", SETTINGS_DOCTYPE):
 		return None
@@ -109,18 +85,14 @@ def _get_settings():
 
 
 def _get_private_key(settings) -> str:
-	source = settings.get("private_key_source") or KEY_SOURCE_PASTED
-	if source == KEY_SOURCE_PASTED:
-		private_key = settings.get_password("private_key", raise_exception=False)
-		if not private_key:
-			raise EnableBankingConfigurationError("Paste a private key in Enable Banking Settings.")
-		return validate_private_key(private_key)
+	private_key = settings.get_password("private_key", raise_exception=False)
+	if not private_key:
+		raise EnableBankingConfigurationError("Paste a private key in Enable Banking Settings.")
+	return validate_private_key(private_key)
 
-	if source == KEY_SOURCE_UPLOAD:
-		file_url = _required_settings_value(settings, "private_key_file")
-		return get_uploaded_private_key(file_url)
 
-	raise EnableBankingConfigurationError(f"Unsupported Enable Banking private key source: {source}")
+def _configured_api_url() -> str:
+	return str(frappe.conf.get(API_URL_SITE_CONFIG_KEY) or DEFAULT_API_URL).strip().rstrip("/")
 
 
 def _required_settings_value(settings, fieldname: str) -> str:

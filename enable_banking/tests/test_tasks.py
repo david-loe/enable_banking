@@ -10,29 +10,21 @@ from enable_banking import tasks
 
 class TestSyncCadence(unittest.TestCase):
 	def test_configured_intervals_are_due_at_expected_hours(self):
-		self.assertTrue(
-			tasks.is_sync_interval_due("Every Hour", now=datetime(2026, 6, 19, 5, 0))
-		)
-		self.assertTrue(
-			tasks.is_sync_interval_due("Four Times a Day", now=datetime(2026, 6, 19, 12, 0))
-		)
-		self.assertFalse(
-			tasks.is_sync_interval_due("Four Times a Day", now=datetime(2026, 6, 19, 13, 0))
-		)
-		self.assertTrue(
-			tasks.is_sync_interval_due("Once a Day", now=datetime(2026, 6, 19, 0, 0))
-		)
-		self.assertFalse(
-			tasks.is_sync_interval_due("Once a Day", now=datetime(2026, 6, 19, 1, 0))
-		)
+		self.assertTrue(tasks.is_sync_interval_due("Every Hour", now=datetime(2026, 6, 19, 5, 0)))
+		self.assertTrue(tasks.is_sync_interval_due("Four Times a Day", now=datetime(2026, 6, 19, 12, 0)))
+		self.assertFalse(tasks.is_sync_interval_due("Four Times a Day", now=datetime(2026, 6, 19, 13, 0)))
+		self.assertTrue(tasks.is_sync_interval_due("Once a Day", now=datetime(2026, 6, 19, 0, 0)))
+		self.assertFalse(tasks.is_sync_interval_due("Once a Day", now=datetime(2026, 6, 19, 1, 0)))
 
 	@patch("enable_banking.tasks.enqueue_account_syncs")
+	@patch("enable_banking.tasks.recover_stale_account_sync_states")
 	@patch("enable_banking.tasks.now_datetime", return_value=datetime(2026, 6, 19, 12, 0))
 	@patch("enable_banking.tasks.frappe")
 	def test_scheduler_dispatches_only_when_enabled_and_due(
 		self,
 		frappe_mock,
 		_now,
+		recover_stale,
 		enqueue_syncs,
 	):
 		frappe_mock.get_single.return_value = SimpleNamespace(
@@ -45,6 +37,7 @@ class TestSyncCadence(unittest.TestCase):
 		result = tasks.enqueue_scheduled_account_syncs()
 
 		self.assertEqual(result["queued"], 2)
+		recover_stale.assert_called_once_with()
 		enqueue_syncs.assert_called_once_with(manual=False)
 
 	@patch("enable_banking.tasks.enqueue_account_job", return_value=True)
@@ -94,7 +87,10 @@ class TestAccountLocking(unittest.TestCase):
 	@patch("enable_banking.tasks.refresh_account")
 	@patch("enable_banking.tasks.verify_connection_session")
 	@patch("enable_banking.tasks.EnableBankingClient")
-	@patch("enable_banking.tasks.now_datetime", side_effect=["attempt", "success"])
+	@patch(
+		"enable_banking.tasks.now_datetime",
+		side_effect=["account-attempt", "connection-attempt", "success"],
+	)
 	@patch("enable_banking.tasks.frappe")
 	def test_authorized_account_runs_under_lock(
 		self,
@@ -115,6 +111,7 @@ class TestAccountLocking(unittest.TestCase):
 			connection="CONNECTION-1",
 			automatic_sync=1,
 			last_error=None,
+			db_set=Mock(),
 		)
 		connection = SimpleNamespace(
 			name="CONNECTION-1",
@@ -148,6 +145,23 @@ class TestAccountLocking(unittest.TestCase):
 		lock.release.assert_called_once_with()
 		self.assertEqual(connection.last_sync_success_at, "success")
 		self.assertIn("created 1", connection.sync_counts)
+
+	@patch("enable_banking.tasks.frappe")
+	def test_stale_queued_and_in_progress_states_are_recovered(self, frappe_mock):
+		frappe_mock.get_all.return_value = [
+			SimpleNamespace(name="ACCOUNT-1", sync_status="Queued"),
+			SimpleNamespace(name="ACCOUNT-2", sync_status="In Progress"),
+		]
+
+		count = tasks.recover_stale_account_sync_states(now=datetime(2026, 6, 19, 12, 0))
+
+		self.assertEqual(count, 2)
+		self.assertEqual(frappe_mock.db.set_value.call_count, 2)
+		for call in frappe_mock.db.set_value.call_args_list:
+			self.assertEqual(call.args[2]["sync_status"], "Failed")
+
+	def test_lock_lifetime_exceeds_background_job_timeout(self):
+		self.assertGreater(tasks.SYNC_LOCK_TIMEOUT, tasks.SYNC_JOB_TIMEOUT)
 
 
 class TestSessionHealth(unittest.TestCase):

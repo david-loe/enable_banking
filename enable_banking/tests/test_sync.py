@@ -122,7 +122,7 @@ class TestBalanceNormalization(unittest.TestCase):
 
 
 class TestBalancePersistence(unittest.TestCase):
-	def test_booked_only_response_preserves_existing_available_balance(self):
+	def test_booked_only_response_clears_existing_available_balance(self):
 		account = Mock()
 		account.currency = "EUR"
 		normalized = sync.normalize_balances(
@@ -134,11 +134,11 @@ class TestBalancePersistence(unittest.TestCase):
 
 		values = account.db_set.call_args.args[0]
 		self.assertEqual(values["booked_balance"], Decimal("13.39"))
-		self.assertNotIn("available_balance", values)
+		self.assertIsNone(values["available_balance"])
 		self.assertEqual(values["balance_currency"], "EUR")
 		self.assertIsNone(values["balance_as_of"])
 
-	def test_available_only_response_preserves_existing_booked_balance(self):
+	def test_available_only_response_clears_existing_booked_balance(self):
 		account = Mock()
 		account.currency = "EUR"
 		normalized = sync.normalize_balances(
@@ -150,7 +150,7 @@ class TestBalancePersistence(unittest.TestCase):
 
 		values = account.db_set.call_args.args[0]
 		self.assertEqual(values["available_balance"], Decimal("12.34"))
-		self.assertNotIn("booked_balance", values)
+		self.assertIsNone(values["booked_balance"])
 		self.assertEqual(values["balance_currency"], "EUR")
 
 	def test_booked_and_available_response_updates_both_balances(self):
@@ -188,8 +188,9 @@ class TestBalancePersistence(unittest.TestCase):
 		self.assertNotIn("available_balance", values)
 		self.assertNotIn("balance_currency", values)
 
+	@patch("enable_banking.sync._validate_mapped_bank_account")
 	@patch("enable_banking.sync.frappe")
-	def test_mapped_bank_account_is_not_updated_on_gl_currency_mismatch(self, frappe_mock):
+	def test_currency_mismatch_only_clears_absent_balance_type(self, frappe_mock, _validate_mapping):
 		account = SimpleNamespace(bank_account="BA-1")
 		connection = SimpleNamespace(company="Test Company")
 		frappe_mock.get_doc.return_value = SimpleNamespace(
@@ -206,11 +207,15 @@ class TestBalancePersistence(unittest.TestCase):
 
 		sync._update_mapped_bank_account_balance_fields(account, connection, snapshot)
 
-		frappe_mock.db.set_value.assert_not_called()
+		values = frappe_mock.db.set_value.call_args.args[2]
+		self.assertIsNone(values["enable_banking_booked_balance"])
+		self.assertNotIn("enable_banking_available_balance", values)
+		self.assertNotIn("enable_banking_balance_as_of", values)
 
 	@patch("enable_banking.sync.now_datetime", return_value="2026-06-18 12:00:00")
+	@patch("enable_banking.sync._validate_mapped_bank_account")
 	@patch("enable_banking.sync.frappe")
-	def test_mapped_bank_account_is_updated_when_currency_matches(self, frappe_mock, _now):
+	def test_mapped_bank_account_is_updated_when_currency_matches(self, frappe_mock, _validate_mapping, _now):
 		account = SimpleNamespace(bank_account="BA-1")
 		connection = SimpleNamespace(company="Test Company")
 		frappe_mock.get_doc.return_value = SimpleNamespace(
@@ -220,22 +225,23 @@ class TestBalancePersistence(unittest.TestCase):
 		)
 		frappe_mock.get_cached_value.return_value = "EUR"
 		snapshot = sync.select_balance_snapshot(
-			sync.normalize_balances(
-				{"balances": [_balance("Booked", "ITBD", "10.00", "EUR", "2026-06-18")]}
-			)
+			sync.normalize_balances({"balances": [_balance("Booked", "ITBD", "10.00", "EUR", "2026-06-18")]})
 		)
 
 		sync._update_mapped_bank_account_balance_fields(account, connection, snapshot)
 
 		values = frappe_mock.db.set_value.call_args.args[2]
 		self.assertEqual(values["enable_banking_booked_balance"], Decimal("10.00"))
-		self.assertNotIn("enable_banking_available_balance", values)
+		self.assertIsNone(values["enable_banking_available_balance"])
 		self.assertEqual(values["enable_banking_balance_currency"], "EUR")
 		self.assertEqual(values["enable_banking_last_sync_at"], "2026-06-18 12:00:00")
 
 	@patch("enable_banking.sync.now_datetime", return_value="2026-06-18 12:00:00")
+	@patch("enable_banking.sync._validate_mapped_bank_account")
 	@patch("enable_banking.sync.frappe")
-	def test_mapped_bank_account_updates_both_balances_when_present(self, frappe_mock, _now):
+	def test_mapped_bank_account_updates_both_balances_when_present(
+		self, frappe_mock, _validate_mapping, _now
+	):
 		account = SimpleNamespace(bank_account="BA-1")
 		connection = SimpleNamespace(company="Test Company")
 		frappe_mock.get_doc.return_value = SimpleNamespace(
@@ -261,13 +267,40 @@ class TestBalancePersistence(unittest.TestCase):
 		self.assertEqual(values["enable_banking_booked_balance"], Decimal("10.00"))
 		self.assertEqual(values["enable_banking_available_balance"], Decimal("9.00"))
 
+	@patch("enable_banking.sync.now_datetime", return_value="2026-06-18 12:00:00")
+	@patch("enable_banking.sync._validate_mapped_bank_account")
+	@patch("enable_banking.sync.frappe")
+	def test_empty_successful_response_clears_balances_and_timestamp(
+		self, frappe_mock, _validate_mapping, _now
+	):
+		account = SimpleNamespace(bank_account="BA-1")
+		connection = SimpleNamespace(company="Test Company")
+		frappe_mock.get_doc.return_value = SimpleNamespace(
+			name="BA-1",
+			company="Test Company",
+			account="Bank EUR - TC",
+		)
+		frappe_mock.get_cached_value.return_value = "EUR"
+
+		sync._update_mapped_bank_account_balance_fields(
+			account,
+			connection,
+			sync.select_balance_snapshot([]),
+		)
+
+		values = frappe_mock.db.set_value.call_args.args[2]
+		self.assertIsNone(values["enable_banking_booked_balance"])
+		self.assertIsNone(values["enable_banking_available_balance"])
+		self.assertIsNone(values["enable_banking_balance_as_of"])
+
 
 class TestAccountRefresh(unittest.TestCase):
+	@patch("enable_banking.sync.now_datetime", return_value="now")
 	@patch("enable_banking.sync._update_doc")
 	@patch("enable_banking.sync._refresh_balances")
 	@patch("enable_banking.sync._update_account_details")
 	def test_authorized_unmapped_account_fetches_balances(
-		self, update_details, refresh_balances, _update_doc
+		self, update_details, refresh_balances, _update_doc, _now
 	):
 		account = SimpleNamespace(resource_uid="ACCOUNT-1", bank_account=None)
 		connection = SimpleNamespace(authorization_status="AUTHORIZED")
@@ -282,11 +315,12 @@ class TestAccountRefresh(unittest.TestCase):
 		self.assertTrue(result["balances_refreshed"])
 		self.assertEqual(result["balance_count"], 2)
 
+	@patch("enable_banking.sync.now_datetime", return_value="now")
 	@patch("enable_banking.sync._update_doc")
 	@patch("enable_banking.sync._refresh_balances")
 	@patch("enable_banking.sync._update_account_details")
 	def test_authorized_mapped_account_still_fetches_balances(
-		self, _update_details, refresh_balances, _update_doc
+		self, _update_details, refresh_balances, _update_doc, _now
 	):
 		account = SimpleNamespace(resource_uid="ACCOUNT-1", bank_account="BA-1")
 		connection = SimpleNamespace(authorization_status="AUTHORIZED")
@@ -299,11 +333,12 @@ class TestAccountRefresh(unittest.TestCase):
 		refresh_balances.assert_called_once_with(account, connection, client)
 		self.assertTrue(result["balances_refreshed"])
 
+	@patch("enable_banking.sync.now_datetime", return_value="now")
 	@patch("enable_banking.sync._update_doc")
 	@patch("enable_banking.sync._refresh_balances")
 	@patch("enable_banking.sync._update_account_details")
 	def test_unauthorized_connection_skips_balances(
-		self, _update_details, refresh_balances, _update_doc
+		self, _update_details, refresh_balances, _update_doc, _now
 	):
 		account = SimpleNamespace(resource_uid="ACCOUNT-1", bank_account=None)
 		connection = SimpleNamespace(authorization_status="CLOSED")
@@ -315,12 +350,11 @@ class TestAccountRefresh(unittest.TestCase):
 		refresh_balances.assert_not_called()
 		self.assertFalse(result["balances_refreshed"])
 
+	@patch("enable_banking.sync.now_datetime", return_value="now")
 	@patch("enable_banking.sync._update_doc")
 	@patch("enable_banking.sync._refresh_balances")
 	@patch("enable_banking.sync._update_account_details")
-	def test_fetch_balances_false_skips_balances(
-		self, _update_details, refresh_balances, _update_doc
-	):
+	def test_fetch_balances_false_skips_balances(self, _update_details, refresh_balances, _update_doc, _now):
 		account = SimpleNamespace(resource_uid="ACCOUNT-1", bank_account=None)
 		connection = SimpleNamespace(authorization_status="AUTHORIZED")
 		client = Mock()
@@ -410,9 +444,7 @@ class TestTransactionNormalization(unittest.TestCase):
 		self.assertEqual(normalized["transaction_id"], "PROVIDER-ID")
 		self.assertEqual(
 			normalized["enable_banking_transaction_key"],
-			sync.normalize_transaction(transaction, "account-hash")[
-				"enable_banking_transaction_key"
-			],
+			sync.normalize_transaction(transaction, "account-hash")["enable_banking_transaction_key"],
 		)
 
 	def test_fingerprint_changes_for_different_accounts(self):
@@ -483,6 +515,9 @@ class TestTransactionSync(unittest.TestCase):
 		self.assertTrue(result["successful"])
 		self.assertEqual(account.last_successful_end_date, date(2026, 6, 19))
 		frappe_mock.db.set_value.assert_called_once()
+		request = client.get_account_transactions.call_args
+		self.assertEqual(request.kwargs["max_pages"], 20)
+		self.assertEqual(request.kwargs["max_transactions"], 5000)
 
 	@patch("enable_banking.sync._insert_bank_transaction")
 	@patch("enable_banking.sync._validate_transaction_sync_account")
@@ -596,9 +631,7 @@ class TestBankTransactionInsertion(unittest.TestCase):
 				index=5,
 			)
 
-		frappe_mock.db.rollback.assert_called_once_with(
-			save_point="enable_banking_transaction_5"
-		)
+		frappe_mock.db.rollback.assert_called_once_with(save_point="enable_banking_transaction_5")
 		frappe_mock.db.release_savepoint.assert_called_once_with("enable_banking_transaction_5")
 
 

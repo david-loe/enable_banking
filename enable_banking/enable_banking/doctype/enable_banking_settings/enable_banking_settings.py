@@ -5,12 +5,7 @@ from frappe import _
 from frappe.model.document import Document
 from frappe.utils.password import remove_encrypted_password, set_encrypted_password
 
-from enable_banking.configuration import (
-	KEY_SOURCE_UPLOAD,
-	SETTINGS_DOCTYPE,
-	get_uploaded_private_key,
-	validate_private_key,
-)
+from enable_banking.configuration import SETTINGS_DOCTYPE, validate_private_key
 
 
 class EnableBankingSettings(Document):
@@ -23,14 +18,16 @@ class EnableBankingSettings(Document):
 	def validate(self):
 		if self.sync_interval not in ("Every Hour", "Four Times a Day", "Once a Day"):
 			frappe.throw(_("Select a valid Synchronization Interval."))
-		for fieldname in ("initial_import_days", "default_consent_days"):
+		for fieldname in (
+			"initial_import_days",
+			"default_consent_days",
+			"max_transaction_pages",
+			"max_transactions_per_sync",
+		):
 			if self.get(fieldname) is not None and self.get(fieldname) < 1:
 				frappe.throw(_("{0} must be at least one day.").format(self.meta.get_label(fieldname)))
 		if self.overlap_days is not None and self.overlap_days < 0:
 			frappe.throw(_("Incremental Import Overlap Days cannot be negative."))
-
-		if self.private_key_source == KEY_SOURCE_UPLOAD and self.private_key_file:
-			get_uploaded_private_key(self.private_key_file)
 
 	@frappe.whitelist()
 	def set_private_key(self, private_key: str):
@@ -39,10 +36,8 @@ class EnableBankingSettings(Document):
 		set_encrypted_password(SETTINGS_DOCTYPE, SETTINGS_DOCTYPE, private_key, "private_key")
 		frappe.db.set_single_value(
 			SETTINGS_DOCTYPE,
-			{
-				"private_key_source": "Pasted Key",
-				"private_key_configured": 1,
-			},
+			"private_key_configured",
+			1,
 		)
 		return {"configured": True}
 

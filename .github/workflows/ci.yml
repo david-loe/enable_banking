@@ -83,15 +83,18 @@ jobs:
       - name: Setup
         run: |
           pip install frappe-bench
-          bench init --skip-redis-config-generation --skip-assets --python "$(which python)" ~/frappe-bench
+          bench init --frappe-branch version-16 --skip-redis-config-generation --skip-assets --python "$(which python)" ~/frappe-bench
 
       - name: Install
         working-directory: /home/runner/frappe-bench
         run: |
+          bench get-app --branch version-16 erpnext https://github.com/frappe/erpnext
           bench get-app enable_banking $GITHUB_WORKSPACE
           bench setup requirements --dev
+          ./env/bin/python -m pip check
           bench new-site --db-root-password root --admin-password admin test_site
           bench --site test_site install-app enable_banking
+          bench --site test_site migrate
           bench build
         env:
           CI: 'Yes'

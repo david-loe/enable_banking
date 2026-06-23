@@ -57,6 +57,21 @@ frappe.ui.form.on("Enable Banking Connection", {
 					},
 				);
 			});
+		} else {
+			frm.add_custom_button(__("Delete Connection"), () => {
+				frappe.confirm(
+					__("Delete this closed connection and its Enable Banking account records?"),
+					() => {
+						frappe
+							.call({
+								method: "enable_banking.onboarding.delete_connection",
+								args: { connection: frm.doc.name },
+								freeze: true,
+							})
+							.then(() => frappe.set_route("List", "Enable Banking Connection"));
+					},
+				);
+			});
 		}
 	},
 });

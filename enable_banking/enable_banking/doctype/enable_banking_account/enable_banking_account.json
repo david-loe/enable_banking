@@ -59,6 +59,7 @@
    "in_standard_filter": 1,
    "label": "Connection",
    "options": "Enable Banking Connection",
+   "read_only": 1,
    "reqd": 1
   },
   {
@@ -114,6 +115,7 @@
    "in_standard_filter": 1,
    "label": "Bank Account",
    "options": "Bank Account",
+   "read_only": 1,
    "unique": 1
   },
   {
@@ -339,16 +341,12 @@
  "owner": "Administrator",
  "permissions": [
   {
-   "create": 1,
-   "delete": 1,
    "read": 1,
    "report": 1,
    "role": "Accounts Manager",
    "write": 1
   },
   {
-   "create": 1,
-   "delete": 1,
    "read": 1,
    "report": 1,
    "role": "System Manager",

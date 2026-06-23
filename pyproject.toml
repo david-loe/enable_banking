@@ -8,8 +8,9 @@ requires-python = ">=3.14"
 readme = "README.md"
 dynamic = ["version"]
 dependencies = [
-    "PyJWT[crypto]>=2.8,<3",
-    "requests>=2.31,<3",
+    "PyJWT[crypto]~=2.12.1",
+    "cryptography~=46.0.3",
+    "requests~=2.33.0",
     # "frappe~=16.0.0" # Installed and managed by bench.
 ]
 

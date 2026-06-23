@@ -40,9 +40,7 @@ class TestEnableBankingSettings(unittest.TestCase):
 		)
 		frappe_mock.db.set_single_value.assert_called_once_with(
 			"Enable Banking Settings",
-			{
-				"private_key_source": "Pasted Key",
-				"private_key_configured": 1,
-			},
+			"private_key_configured",
+			1,
 		)
 		self.assertEqual(result, {"configured": True})

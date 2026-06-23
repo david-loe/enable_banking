@@ -1,6 +1,8 @@
 // Copyright (c) 2026, david-loe and contributors
 // For license information, please see license.txt
 
+const MAX_PRIVATE_KEY_FILE_BYTES = 64 * 1024;
+
 frappe.ui.form.on("Enable Banking Settings", {
 	refresh(frm) {
 		frm.add_custom_button(__("Connect Bank"), () => show_connect_bank_dialog(frm));
@@ -32,7 +34,7 @@ frappe.ui.form.on("Enable Banking Settings", {
 
 		if (frm.doc.private_key_configured) {
 			frm.add_custom_button(
-				__("Clear Pasted Key"),
+				__("Clear Private Key"),
 				() => {
 					frappe.confirm(__("Remove the encrypted pasted private key?"), () => {
 						frm.call("clear_private_key").then(() => frm.reload_doc());
@@ -195,6 +197,10 @@ function show_private_key_dialog(frm) {
 		title: __("Paste Enable Banking Private Key"),
 		fields: [
 			{
+				fieldname: "private_key_file",
+				fieldtype: "HTML",
+			},
+			{
 				fieldname: "private_key",
 				fieldtype: "Code",
 				label: __("PEM Private Key"),
@@ -213,4 +219,83 @@ function show_private_key_dialog(frm) {
 		},
 	});
 	dialog.show();
+	setup_private_key_file_input(dialog);
+}
+
+function setup_private_key_file_input(dialog) {
+	const $wrapper = dialog.get_field("private_key_file").$wrapper;
+	const $label = $("<label>", {
+		class: "control-label",
+		text: __("Choose PEM File"),
+	});
+	const $input = $("<input>", {
+		type: "file",
+		class: "form-control",
+		accept: ".pem,.key,text/plain,application/x-pem-file",
+	});
+	const $description = $("<p>", {
+		class: "help-box small text-muted",
+		text: __(
+			"The file is read in this browser and is not uploaded as an attachment.",
+		),
+	});
+	const $status = $("<p>", {
+		class: "small text-muted",
+	});
+
+	$input.on("change", () => {
+		const file = $input[0].files?.[0];
+		if (!file) return;
+
+		if (file.size > MAX_PRIVATE_KEY_FILE_BYTES) {
+			show_private_key_file_error(__("The selected private key exceeds the 64 KiB limit."));
+			$input.val("");
+			return;
+		}
+
+		$status.removeClass("text-danger").text(__("Reading {0}...", [file.name]));
+		read_private_key_file(file)
+			.then((private_key) => {
+				if (
+					!private_key.trim() ||
+					private_key.includes("\0") ||
+					private_key.includes("\uFFFD")
+				) {
+					throw new Error(__("The selected file is not a valid UTF-8 text file."));
+				}
+				return dialog.set_value("private_key", private_key);
+			})
+			.then(() => {
+				$status
+					.removeClass("text-danger")
+					.text(__("Loaded {0}.", [file.name]));
+			})
+			.catch((error) => {
+				const message =
+					error?.message || __("The selected private key file could not be read.");
+				$status.addClass("text-danger").text(message);
+				show_private_key_file_error(message);
+				$input.val("");
+			});
+	});
+
+	$wrapper.empty().append($label, $input, $description, $status);
+}
+
+function read_private_key_file(file) {
+	return new Promise((resolve, reject) => {
+		const reader = new FileReader();
+		reader.onload = () => resolve(reader.result);
+		reader.onerror = () =>
+			reject(new Error(__("The selected private key file could not be read.")));
+		reader.readAsText(file, "UTF-8");
+	});
+}
+
+function show_private_key_file_error(message) {
+	frappe.msgprint({
+		title: __("Invalid Private Key File"),
+		message,
+		indicator: "red",
+	});
 }

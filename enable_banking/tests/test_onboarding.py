@@ -147,15 +147,325 @@ class TestCallbackState(unittest.TestCase):
 		create_records,
 		redirect,
 	):
-		authorization = Mock()
+		authorization = SimpleNamespace(
+			name="AUTH-1",
+			status="Processing",
+			provider_session_id=None,
+			db_set=Mock(),
+		)
 		consume.return_value = authorization
 		client_class.return_value.authorize_session.return_value = {"session_id": "session"}
-		create_records.return_value = SimpleNamespace(name="CONN 1")
+		create_records.return_value = (SimpleNamespace(name="CONN 1"), None)
 
 		onboarding.callback(state="state", code="secret-code")
 
 		redirect.assert_called_once_with("/app/enable-banking-connection/CONN%201")
 		self.assertNotIn("secret-code", str(authorization.db_set.call_args))
+
+	@patch("enable_banking.onboarding._redirect")
+	@patch(
+		"enable_banking.onboarding._create_connection_and_accounts",
+		side_effect=RuntimeError("database failed for /sessions/new-session"),
+	)
+	@patch("enable_banking.onboarding.EnableBankingClient")
+	@patch("enable_banking.onboarding._consume_authorization")
+	@patch("enable_banking.onboarding.frappe")
+	def test_callback_closes_new_session_when_local_persistence_fails(
+		self,
+		frappe_mock,
+		consume,
+		client_class,
+		_create_records,
+		_redirect,
+	):
+		authorization = SimpleNamespace(
+			name="AUTH-1",
+			status="Processing",
+			provider_session_id=None,
+			db_set=Mock(),
+		)
+		consume.return_value = authorization
+		client = client_class.return_value
+		client.authorize_session.return_value = {"session_id": "new-session"}
+
+		onboarding.callback(state="state", code="secret-code")
+
+		client.delete_session.assert_called_once_with("new-session")
+		update = frappe_mock.db.set_value.call_args.args[2]
+		self.assertEqual(update["status"], "Failed")
+		self.assertIsNone(update["provider_session_id"])
+		self.assertNotIn("new-session", update["error_message"])
+
+	@patch("enable_banking.onboarding._redirect")
+	@patch(
+		"enable_banking.onboarding._create_connection_and_accounts",
+		side_effect=RuntimeError("database failed"),
+	)
+	@patch("enable_banking.onboarding.EnableBankingClient")
+	@patch("enable_banking.onboarding._consume_authorization")
+	@patch("enable_banking.onboarding.frappe")
+	def test_callback_preserves_recoverable_state_when_new_session_cleanup_fails(
+		self,
+		frappe_mock,
+		consume,
+		client_class,
+		_create_records,
+		_redirect,
+	):
+		authorization = SimpleNamespace(
+			name="AUTH-1",
+			status="Processing",
+			provider_session_id=None,
+			db_set=Mock(),
+		)
+		consume.return_value = authorization
+		client = client_class.return_value
+		client.authorize_session.return_value = {"session_id": "new-session"}
+		client.delete_session.side_effect = RuntimeError("failed /sessions/new-session")
+
+		onboarding.callback(state="state", code="secret-code")
+
+		update = frappe_mock.db.set_value.call_args.args[2]
+		self.assertEqual(update["status"], "Cleanup Required")
+		self.assertEqual(update["provider_session_id"], "new-session")
+		self.assertNotIn("new-session", update["error_message"])
+
+	@patch("enable_banking.onboarding._redirect")
+	@patch("enable_banking.onboarding._create_connection_and_accounts")
+	@patch("enable_banking.onboarding.EnableBankingClient")
+	@patch("enable_banking.onboarding._consume_authorization")
+	@patch("enable_banking.onboarding.frappe")
+	def test_callback_recovers_a_previously_created_session(
+		self,
+		_frappe_mock,
+		consume,
+		client_class,
+		create_records,
+		redirect,
+	):
+		authorization = SimpleNamespace(
+			name="AUTH-1",
+			status="Session Created",
+			provider_session_id="existing-session",
+			db_set=Mock(),
+		)
+		consume.return_value = authorization
+		client_class.return_value.get_session.return_value = {"accounts": []}
+		create_records.return_value = (SimpleNamespace(name="CONN-1"), None)
+
+		onboarding.callback(state="state")
+
+		client_class.return_value.authorize_session.assert_not_called()
+		client_class.return_value.get_session.assert_called_once_with("existing-session")
+		session = create_records.call_args.args[1]
+		self.assertEqual(session["session_id"], "existing-session")
+		redirect.assert_called_once_with("/app/enable-banking-connection/CONN-1")
+
+	@patch("enable_banking.onboarding._redirect")
+	@patch("enable_banking.onboarding._close_superseded_session")
+	@patch("enable_banking.onboarding.EnableBankingClient")
+	@patch("enable_banking.onboarding._consume_authorization")
+	@patch("enable_banking.onboarding.frappe")
+	def test_callback_resumes_only_old_session_cleanup_after_reauthorization_commit(
+		self,
+		frappe_mock,
+		consume,
+		client_class,
+		close_superseded,
+		redirect,
+	):
+		authorization = SimpleNamespace(
+			name="AUTH-1",
+			status="Session Created",
+			provider_session_id="new-session",
+			connection="CONN-1",
+			superseded_session_id="old-session",
+		)
+		connection = SimpleNamespace(name="CONN-1")
+		consume.return_value = authorization
+		frappe_mock.get_doc.return_value = connection
+
+		onboarding.callback(state="state")
+
+		close_superseded.assert_called_once_with(
+			authorization,
+			connection,
+			"old-session",
+			client_class.return_value,
+		)
+		client_class.return_value.get_session.assert_not_called()
+		redirect.assert_called_once_with("/app/enable-banking-connection/CONN-1")
+
+	@patch("enable_banking.onboarding._redirect")
+	@patch("enable_banking.onboarding._close_superseded_session")
+	@patch("enable_banking.onboarding._create_connection_and_accounts")
+	@patch("enable_banking.onboarding.EnableBankingClient")
+	@patch("enable_banking.onboarding._consume_authorization")
+	@patch("enable_banking.onboarding.frappe")
+	def test_successful_reauthorization_callback_closes_old_session(
+		self,
+		frappe_mock,
+		consume,
+		client_class,
+		create_records,
+		close_superseded,
+		redirect,
+	):
+		authorization = SimpleNamespace(
+			name="AUTH-1",
+			status="Processing",
+			provider_session_id=None,
+			db_set=Mock(),
+		)
+		connection = SimpleNamespace(name="CONN-1")
+		consume.return_value = authorization
+		client = client_class.return_value
+		client.authorize_session.return_value = {"session_id": "new-session"}
+		create_records.return_value = (connection, "old-session")
+
+		onboarding.callback(state="state", code="secret-code")
+
+		persistence_update = authorization.db_set.call_args_list[-1].args[0]
+		self.assertEqual(persistence_update["status"], "Session Created")
+		self.assertEqual(persistence_update["superseded_session_id"], "old-session")
+		close_superseded.assert_called_once_with(
+			authorization,
+			connection,
+			"old-session",
+			client,
+		)
+		frappe_mock.db.commit.assert_called()
+		redirect.assert_called_once_with("/app/enable-banking-connection/CONN-1")
+
+	@patch("enable_banking.onboarding._start_authorization")
+	@patch("enable_banking.onboarding._require_manager")
+	@patch("enable_banking.onboarding.frappe")
+	def test_reauthorize_targets_the_existing_connection(
+		self,
+		frappe_mock,
+		_require_manager,
+		start,
+	):
+		connection = SimpleNamespace(
+			name="CONN-1",
+			authorization="AUTH-OLD",
+			company="Test Company",
+			parent_gl_account="Bank Accounts - TC",
+			aspsp_country="FI",
+			aspsp_name="OP",
+			psu_type="personal",
+			automatic_sync=1,
+			check_permission=Mock(),
+		)
+		source = SimpleNamespace(consent_days=30, parent_gl_account="Bank Accounts - TC")
+		frappe_mock.get_doc.side_effect = [connection, source]
+		frappe_mock.db.exists.return_value = True
+
+		onboarding.reauthorize("CONN-1")
+
+		self.assertEqual(start.call_args.kwargs["reauthorization_connection"], "CONN-1")
+
+	@patch("enable_banking.onboarding._refresh_connection_details_after_authorization")
+	@patch("enable_banking.onboarding._upsert_discovered_account")
+	@patch(
+		"enable_banking.onboarding.now_datetime",
+		return_value=datetime(2026, 6, 19, 12, 0),
+	)
+	@patch("enable_banking.onboarding.frappe")
+	def test_reauthorization_reuses_connection_and_refreshes_once(
+		self,
+		frappe_mock,
+		_now,
+		upsert,
+		refresh,
+	):
+		connection = Mock(
+			name="connection",
+			company="Test Company",
+			aspsp_name="OP",
+			aspsp_country="FI",
+			psu_type="personal",
+			provider_session_id="old-session",
+		)
+		connection.name = "CONN-1"
+		frappe_mock.get_doc.return_value = connection
+		authorization = SimpleNamespace(
+			name="AUTH-NEW",
+			company="Test Company",
+			parent_gl_account="Bank Accounts - TC",
+			automatic_sync=1,
+			aspsp_name="OP",
+			aspsp_country="FI",
+			psu_type="personal",
+			reauthorization_connection="CONN-1",
+		)
+		session = {
+			"session_id": "new-session",
+			"aspsp": {"name": "OP", "country": "FI"},
+			"psu_type": "personal",
+			"accounts": [{"uid": "one"}, {"uid": "two"}],
+		}
+
+		result, old_session = onboarding._create_connection_and_accounts(
+			authorization,
+			session,
+		)
+
+		self.assertIs(result, connection)
+		self.assertEqual(old_session, "old-session")
+		connection.save.assert_called_once_with(ignore_permissions=True)
+		self.assertEqual(upsert.call_count, 2)
+		refresh.assert_called_once_with(connection)
+
+	@patch("enable_banking.onboarding.frappe")
+	def test_failed_close_preserves_active_local_state(self, frappe_mock):
+		connection = SimpleNamespace(
+			name="CONN-1",
+			authorization_status="AUTHORIZED",
+			provider_session_id="secret-session",
+			check_permission=Mock(),
+			db_set=Mock(),
+		)
+		frappe_mock.get_doc.return_value = connection
+		frappe_mock.throw.side_effect = RuntimeError
+
+		with (
+			patch("enable_banking.onboarding._require_manager"),
+			patch("enable_banking.onboarding.EnableBankingClient") as client_class,
+		):
+			client_class.return_value.delete_session.side_effect = RuntimeError(
+				"failed /sessions/secret-session"
+			)
+			with self.assertRaises(RuntimeError):
+				onboarding.close_connection("CONN-1")
+
+		self.assertEqual(connection.authorization_status, "AUTHORIZED")
+		error = connection.db_set.call_args.args[1]
+		self.assertNotIn("secret-session", error)
+
+	@patch("enable_banking.onboarding.frappe")
+	def test_successful_reauthorization_closes_superseded_session(self, frappe_mock):
+		authorization = SimpleNamespace(db_set=Mock())
+		connection = SimpleNamespace(db_set=Mock())
+		client = Mock()
+
+		onboarding._close_superseded_session(
+			authorization,
+			connection,
+			"old-session",
+			client,
+		)
+
+		client.delete_session.assert_called_once_with("old-session")
+		update = authorization.db_set.call_args.args[0]
+		self.assertEqual(update["status"], "Consumed")
+		self.assertIsNone(update["superseded_session_id"])
+		connection.db_set.assert_called_once_with(
+			"last_error",
+			None,
+			update_modified=False,
+		)
+		frappe_mock.db.commit.assert_called_once()
 
 
 class TestAccountDiscovery(unittest.TestCase):
@@ -189,6 +499,7 @@ class TestAccountDiscovery(unittest.TestCase):
 		connection = SimpleNamespace(name="CONN-2", company="Test Company", automatic_sync=1)
 		existing = Mock()
 		existing.company = "Test Company"
+		existing.connection = "CONN-2"
 		frappe_mock.db.get_value.return_value = "ACCOUNT-1"
 		frappe_mock.get_doc.return_value = existing
 		account = _provider_account()
@@ -204,8 +515,13 @@ class TestAccountDiscovery(unittest.TestCase):
 		self.assertEqual(existing.update.call_args.args[0]["resource_uid"], "new-session-uid")
 		existing.save.assert_called_once_with(ignore_permissions=True)
 
+	@patch("enable_banking.integrity.frappe")
 	@patch("enable_banking.onboarding.frappe")
-	def test_existing_mapping_rejects_currency_mismatch(self, frappe_mock):
+	def test_existing_mapping_rejects_currency_mismatch(
+		self,
+		frappe_mock,
+		integrity_frappe,
+	):
 		integration = SimpleNamespace(
 			name="EB-ACCOUNT",
 			bank_account=None,
@@ -222,10 +538,16 @@ class TestAccountDiscovery(unittest.TestCase):
 			get=lambda fieldname: None,
 		)
 		frappe_mock.get_doc.return_value = bank_account
-		frappe_mock.get_cached_value.return_value = "USD"
-		frappe_mock.throw.side_effect = RuntimeError
+		integrity_frappe.db.get_value.return_value = SimpleNamespace(
+			company="Test Company",
+			account_currency="USD",
+			account_type="Bank",
+			is_group=0,
+			disabled=0,
+		)
+		integrity_frappe.throw.side_effect = RuntimeError("currency mismatch")
 
-		with self.assertRaises(RuntimeError):
+		with self.assertRaisesRegex(RuntimeError, "currency mismatch"):
 			onboarding._validate_bank_account_mapping(integration, bank_account.name)
 
 	@patch("enable_banking.onboarding.frappe")
@@ -247,6 +569,20 @@ class TestAccountDiscovery(unittest.TestCase):
 			onboarding._primary_account_identifier(account),
 			{"iban": "FI0455231152453547", "account_number": None},
 		)
+
+	def test_minimal_account_metadata_drops_unneeded_provider_fields(self):
+		account = _provider_account()
+		account["provider_debug"] = {"secret": "not-required"}
+		account["all_account_ids"] = [{"scheme_name": "IBAN", "identification": "FI0455231152453547"}]
+
+		metadata = onboarding.minimal_account_metadata(account)
+
+		self.assertEqual(metadata["account_id"], {"iban": "FI0455231152453547"})
+		self.assertEqual(
+			metadata["all_account_ids"],
+			[{"scheme_name": "IBAN", "identification": "FI0455231152453547"}],
+		)
+		self.assertNotIn("provider_debug", metadata)
 
 
 def _provider_account():

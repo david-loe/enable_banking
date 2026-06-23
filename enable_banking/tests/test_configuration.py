@@ -1,12 +1,14 @@
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives.serialization import Encoding, NoEncryption, PrivateFormat
 
 from enable_banking.configuration import (
+	API_URL_SITE_CONFIG_KEY,
+	DEFAULT_API_URL,
 	EnableBankingConfig,
-	get_uploaded_private_key,
+	_configured_api_url,
 	validate_private_key,
 )
 from enable_banking.exceptions import EnableBankingConfigurationError
@@ -50,45 +52,21 @@ class TestEnableBankingConfig(unittest.TestCase):
 	def test_bytes_private_key_is_decoded(self):
 		self.assertEqual(validate_private_key(self.private_key.encode()), self.private_key)
 
-	@patch("enable_banking.configuration.frappe.get_doc")
-	def test_uploaded_private_file_is_supported(self, get_doc):
-		file_doc = Mock(
-			is_private=1,
-			file_url="/private/files/key.pem",
-			file_size=len(self.private_key),
-		)
-		file_doc.get_content.return_value = self.private_key.encode()
-		get_doc.return_value = file_doc
+	@patch("enable_banking.configuration.frappe")
+	def test_default_api_url_is_fixed(self, frappe_mock):
+		frappe_mock.conf = {}
 
-		self.assertEqual(get_uploaded_private_key("/private/files/key.pem"), self.private_key)
-		get_doc.assert_called_once_with(
-			"File",
-			{
-				"file_url": "/private/files/key.pem",
-				"attached_to_doctype": "Enable Banking Settings",
-				"attached_to_name": "Enable Banking Settings",
-				"attached_to_field": "private_key_file",
-			},
-		)
+		self.assertEqual(_configured_api_url(), DEFAULT_API_URL)
 
-	@patch("enable_banking.configuration.frappe.get_doc")
-	def test_public_uploaded_file_is_rejected(self, get_doc):
-		get_doc.return_value = Mock(
-			is_private=0,
-			file_url="/files/key.pem",
-			file_size=len(self.private_key),
-		)
+	@patch("enable_banking.configuration.frappe")
+	def test_api_url_override_comes_only_from_site_config(self, frappe_mock):
+		frappe_mock.conf = {API_URL_SITE_CONFIG_KEY: "https://sandbox.example.test/"}
 
-		with self.assertRaisesRegex(EnableBankingConfigurationError, "private files"):
-			get_uploaded_private_key("/files/key.pem")
+		self.assertEqual(_configured_api_url(), "https://sandbox.example.test")
 
-	@patch("enable_banking.configuration.frappe.get_doc")
-	def test_remote_uploaded_file_is_rejected(self, get_doc):
-		get_doc.return_value = Mock(
-			is_private=1,
-			file_url="https://example.com/key.pem",
-			file_size=len(self.private_key),
-		)
+	@patch("enable_banking.configuration.frappe")
+	def test_non_https_site_config_override_is_rejected(self, frappe_mock):
+		frappe_mock.conf = {API_URL_SITE_CONFIG_KEY: "http://sandbox.example.test"}
 
-		with self.assertRaisesRegex(EnableBankingConfigurationError, "ERPNext site"):
-			get_uploaded_private_key("https://example.com/key.pem")
+		with self.assertRaisesRegex(EnableBankingConfigurationError, "HTTPS"):
+			self.make_config(api_url=_configured_api_url()).validate()
