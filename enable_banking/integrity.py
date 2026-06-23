@@ -6,6 +6,7 @@ from typing import Any
 
 import frappe
 from frappe import _
+from frappe.utils import get_datetime, get_time, getdate
 
 _internal_operation_depth: ContextVar[int] = ContextVar(
 	"enable_banking_internal_operation_depth",
@@ -45,7 +46,7 @@ def validate_immutable_fields(doc, fieldnames: set[str]) -> None:
 	changed = [
 		doc.meta.get_label(fieldname) or fieldname
 		for fieldname in sorted(fieldnames)
-		if doc.get(fieldname) != previous.get(fieldname)
+		if not _field_values_match(doc, fieldname, doc.get(fieldname), previous.get(fieldname))
 	]
 	if changed:
 		frappe.throw(
@@ -54,6 +55,29 @@ def validate_immutable_fields(doc, fieldnames: set[str]) -> None:
 			),
 			frappe.PermissionError,
 		)
+
+
+def _field_values_match(doc, fieldname: str, current: Any, previous: Any) -> bool:
+	if current == previous:
+		return True
+	if current in (None, "") and previous in (None, ""):
+		return True
+	if current in (None, "") or previous in (None, ""):
+		return False
+
+	field = doc.meta.get_field(fieldname)
+	if not field:
+		return False
+	try:
+		if field.fieldtype == "Datetime":
+			return get_datetime(current) == get_datetime(previous)
+		if field.fieldtype == "Date":
+			return getdate(current) == getdate(previous)
+		if field.fieldtype == "Time":
+			return get_time(current) == get_time(previous)
+	except Exception:
+		return False
+	return False
 
 
 def validate_bank_account_mapping(integration, bank_account: Any) -> None:

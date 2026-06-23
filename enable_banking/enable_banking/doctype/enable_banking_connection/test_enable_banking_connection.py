@@ -1,5 +1,6 @@
 import json
 import uuid
+from datetime import datetime, timedelta
 
 import frappe
 from frappe.tests import IntegrationTestCase
@@ -89,6 +90,57 @@ class TestEnableBankingConnection(IntegrationTestCase):
 			),
 			"manager@example.com\nops@example.com",
 		)
+
+	def test_expiry_notification_save_allows_equivalent_read_only_datetime_strings(self):
+		integration = self._make_integration_account()
+		now = datetime(2026, 6, 23, 10, 15, 30)
+		timestamp_fields = (
+			"valid_from",
+			"valid_until",
+			"expiry_notification_last_valid_until",
+			"last_health_check_at",
+			"last_successful_health_check_at",
+			"last_authorized_at",
+			"closed_at",
+			"last_sync_attempt_at",
+			"last_sync_success_at",
+		)
+		frappe.db.set_value(
+			"Enable Banking Connection",
+			integration.connection,
+			{fieldname: now + timedelta(minutes=index) for index, fieldname in enumerate(timestamp_fields)},
+			update_modified=False,
+		)
+		connection = frappe.get_doc("Enable Banking Connection", integration.connection)
+		for fieldname in timestamp_fields:
+			connection.set(fieldname, str(connection.get(fieldname)))
+		connection.expiry_notification_recipients = "manager@example.com"
+		connection.save(ignore_permissions=True)
+
+		self.assertEqual(
+			frappe.db.get_value(
+				"Enable Banking Connection",
+				connection.name,
+				"expiry_notification_recipients",
+			),
+			"manager@example.com",
+		)
+
+	def test_expiry_notification_save_rejects_changed_read_only_datetime(self):
+		integration = self._make_integration_account()
+		frappe.db.set_value(
+			"Enable Banking Connection",
+			integration.connection,
+			"valid_until",
+			datetime(2026, 6, 23, 10, 15, 30),
+			update_modified=False,
+		)
+		connection = frappe.get_doc("Enable Banking Connection", integration.connection)
+		connection.valid_until = "2026-06-24 10:15:30"
+		connection.expiry_notification_recipients = "manager@example.com"
+
+		with self.assertRaisesRegex(frappe.PermissionError, "Valid Until"):
+			connection.save(ignore_permissions=True)
 
 	def test_invalid_expiry_notification_recipients_are_rejected(self):
 		integration = self._make_integration_account()
